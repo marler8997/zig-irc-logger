@@ -2,6 +2,8 @@ const std = @import("std");
 const mem = std.mem;
 const os = std.os;
 
+const ssl = @import("ssl");
+
 const irc = @import("irc.zig");
 
 const log_setup_msg = std.log.scoped(.setup_msg);
@@ -22,11 +24,13 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
 
-    const stream = try std.net.tcpConnectToHost(allocator, host, 6667);
+    var stream_pinned: ssl.Stream.Pinned = undefined;
+    var stream = try ssl.Stream.init(try std.net.tcpConnectToHost(allocator, host, ssl.irc_port), host, &stream_pinned);
+    defer stream.deinit();
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(writer, user, pass);
+    var state = ClientState.init(user, pass);
 
     var data_len: usize = 0;
 
@@ -82,7 +86,7 @@ const ClientState = struct {
     user: []const u8,
     pass: []const u8,
 
-    pub fn init(writer: std.net.Stream.Writer, user: []const u8, pass: []const u8) ClientState {
+    pub fn init(user: []const u8, pass: []const u8) ClientState {
         return .{
             .stage = .setup,
             .user = user,
