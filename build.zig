@@ -13,7 +13,7 @@ pub fn build(b: *std.build.Builder) !void {
         const iguana_index_file = try (GitRepo {
             .url = "https://github.com/alexnask/iguanaTLS",
             .branch = null,
-            .sha = "44485c6110efb12bff5fa5cb6f3c7ea74d3932d5",
+            .sha = "aefd468513d578576e2b1b23f3b8e2eabcfda560",
         }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "main.zig");
         exe.addPackage(.{
             .name = "ssl",
