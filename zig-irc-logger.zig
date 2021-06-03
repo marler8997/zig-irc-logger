@@ -16,13 +16,23 @@ fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void
     try writer.print(fmt ++ "\r\n", args);
 }
 
-pub fn main() !void {
+pub fn main() u8 {
+    go() catch |e| {
+        std.log.err("{}", .{e});
+        return 1;
+    };
+    unreachable;
+}
+
+pub fn go() !void {
     const user = "zig-irc-logger";
-    const login = Login { .pass = "some-password" };
+    //const login = Login { .pass = "some-password" };
+    const login = null;
 
     const host: []const u8 = "irc.libera.chat";
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
+    defer std.heap.page_allocator.free(buf);
 
     var stream_pinned: ssl.Stream.Pinned = undefined;
     var stream = try ssl.Stream.init(try std.net.tcpConnectToHost(allocator, host, ssl.irc_port), host, &stream_pinned);
@@ -143,6 +153,8 @@ const ClientState = struct {
                     } else {
                         try loggyWriteCmd(writer, "JOIN #zig", .{});
                     }
+                } else if (code == 477) {
+                    return error.CannotJoinChannel;
                 } else {
                     //log_event.warn("ignoring msg", .{});
                 }
