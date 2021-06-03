@@ -28,6 +28,7 @@ pub fn go() !void {
     const user = "zig-irc-logger";
     //const login = Login { .pass = "some-password" };
     const login = null;
+    const channel = "zig";
 
     const host: []const u8 = "irc.libera.chat";
     const allocator = std.heap.page_allocator;
@@ -40,7 +41,7 @@ pub fn go() !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(user, login);
+    var state = ClientState.init(user, login, channel);
 
     var data_len: usize = 0;
 
@@ -99,12 +100,14 @@ const ClientState = struct {
     stage: Stage,
     user: []const u8,
     login: ?Login,
+    channel: []const u8,
 
-    pub fn init(user: []const u8, login: ?Login) ClientState {
+    pub fn init(user: []const u8, login: ?Login, channel: []const u8) ClientState {
         return .{
             .stage = .setup,
             .user = user,
             .login = login,
+            .channel = channel,
         };
     }
     pub fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
@@ -124,7 +127,7 @@ const ClientState = struct {
                             try loggyWriteCmd(writer, "NICK {s}", .{self.user});
                             try loggyWriteCmd(writer, "USER {s} * * :{0s}", .{self.user});
                         } else if (mem.startsWith(u8, trail, "You are now identified for ")) {
-                            try loggyWriteCmd(writer, "JOIN #zig", .{});
+                            try loggyWriteCmd(writer, "JOIN #{s}", .{self.channel});
                         } else if (mem.startsWith(u8, trail, "Invalid password for ")) {
                             return error.InvalidPassword;
                         } else {
@@ -134,10 +137,10 @@ const ClientState = struct {
                 } else if (std.mem.eql(u8, "PING", name)) {
                     try loggyWriteCmd(writer, "PONG {s}", .{params});
                 } else if (std.mem.eql(u8, "JOIN", name)) {
-                    if (std.mem.eql(u8, params, "#zig")) {
+                    if (std.mem.startsWith(u8, params, "#") and std.mem.eql(u8, params[1..], self.channel)) {
                         self.stage = .joined;
                     } else {
-                        log_event.err("expected to join '#zig' but joined '{s}'?", .{params});
+                        log_event.err("expected to join '#{s}' but joined '{s}'?", .{self.channel, params});
                         return error.JoinedWrongChannel;
                     }
                 } else {
@@ -147,11 +150,11 @@ const ClientState = struct {
             .code => |code| {
                 // TODO: handle code 433 (Nickname is already in use)
                 if (code == 376) {
-                    log_event.info("Got '376' '{s}', sending command to join #zig...", .{params});
+                    log_event.info("Got '376' '{s}', sending command to join #{s}...", .{params, self.channel});
                     if (self.login) |login| {
                         try loggyWriteCmd(writer, "PRIVMSG NickServ :identify {s}", .{login.pass});
                     } else {
-                        try loggyWriteCmd(writer, "JOIN #zig", .{});
+                        try loggyWriteCmd(writer, "JOIN #{s}", .{self.channel});
                     }
                 } else if (code == 477) {
                     return error.CannotJoinChannel;
