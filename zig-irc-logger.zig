@@ -18,7 +18,7 @@ fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void
 
 pub fn main() !void {
     const user = "zig-irc-logger";
-    const pass = "some-password";
+    const login = Login { .pass = "some-password" };
 
     const host: []const u8 = "irc.libera.chat";
     const allocator = std.heap.page_allocator;
@@ -30,7 +30,7 @@ pub fn main() !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(user, pass);
+    var state = ClientState.init(user, login);
 
     var data_len: usize = 0;
 
@@ -77,6 +77,10 @@ pub fn main() !void {
     }
 }
 
+const Login = struct {
+    pass: []const u8,
+};
+
 const ClientState = struct {
     const Stage = enum {
         setup,
@@ -84,13 +88,13 @@ const ClientState = struct {
     };
     stage: Stage,
     user: []const u8,
-    pass: []const u8,
+    login: ?Login,
 
-    pub fn init(user: []const u8, pass: []const u8) ClientState {
+    pub fn init(user: []const u8, login: ?Login) ClientState {
         return .{
             .stage = .setup,
             .user = user,
-            .pass = pass,
+            .login = login,
         };
     }
     pub fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
@@ -134,7 +138,11 @@ const ClientState = struct {
                 // TODO: handle code 433 (Nickname is already in use)
                 if (code == 376) {
                     log_event.info("Got '376' '{s}', sending command to join #zig...", .{params});
-                    try loggyWriteCmd(writer, "PRIVMSG NickServ :identify {s}", .{self.pass});
+                    if (self.login) |login| {
+                        try loggyWriteCmd(writer, "PRIVMSG NickServ :identify {s}", .{login.pass});
+                    } else {
+                        try loggyWriteCmd(writer, "JOIN #zig", .{});
+                    }
                 } else {
                     //log_event.warn("ignoring msg", .{});
                 }
