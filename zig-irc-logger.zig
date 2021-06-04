@@ -1,3 +1,28 @@
+//! Connects to the #zig irc channel and outputs channel messages to STDOUT
+//! The output format is
+//!
+//!     TIMESTAMP\nFROM\nMSG\n\n
+//!
+//! Example:
+//! ----------------------------------------------------------------------
+//! 1622787890625
+//! marler8997!~marler899@204.229.3.4
+//! this is a test!
+//!
+//! 1622787896918
+//! marler8997!~marler899@204.229.3.4
+//! is this working?
+//!
+//! ----------------------------------------------------------------------
+//!
+//! Why this format?
+//!   1. Simplicity
+//!        - it has only 1 special character, the '\n' character.
+//!        - there is no need for escaping '\n' because neither TIMESTAMP/FROM/MSG can contain it
+//!   2. Contains only printable characters
+//!   3. I chose to end each message with double-newline so you can find the start of a message
+//!      in the middle of a stream.
+//!
 const std = @import("std");
 const mem = std.mem;
 const os = std.os;
@@ -7,9 +32,10 @@ const ssl = @import("ssl");
 const irc = @import("irc.zig");
 
 const log_msg = std.log.scoped(.msg);
-const log_channel_msg = std.log.scoped(.channel_msg);
 const log_send = std.log.scoped(.send);
 const log_event = std.log.scoped(.event);
+
+const stdout_writer = std.io.getStdOut().writer();
 
 fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void {
     log_send.info("sending '" ++ fmt ++ "'", args);
@@ -25,13 +51,14 @@ pub fn main() u8 {
 }
 
 pub fn go() !void {
+    const host: []const u8 = "irc.libera.chat";
     const user = "zig-irc-logger";
     //const login = Login { .pass = "some-password" };
     const login = null;
     //const channel = "zig";
     const channel = "zigtest";
 
-    const host: []const u8 = "irc.libera.chat";
+
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
     defer std.heap.page_allocator.free(buf);
@@ -183,7 +210,7 @@ const ClientState = struct {
                     }
                     if (std.mem.startsWith(u8, target, "#") and std.mem.eql(u8, target[1..], self.channel)) {
                         const from = if (parsed.prefix_limit == 0) "???" else msg[1..parsed.prefix_limit];
-                        log_channel_msg.info("{s}: {s}", .{from, private_msg});
+                        try stdout_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
                     }
