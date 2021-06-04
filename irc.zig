@@ -4,8 +4,7 @@ const testing = std.testing;
 pub const Msg = struct {
     prefix_limit: u16, // 0 means no prefix
     cmd: Command,
-    middle_off: u16,
-    trail_off: ?u16,
+    params_off: u16,
 
     pub const Command = union(enum) {
         name: Pos,
@@ -45,7 +44,7 @@ pub fn parseMsg(msg: []const u8) !Msg {
     if (cmd_start >= msg.len)
         return error.MissingCommand;
 
-    result.middle_off = blk: {
+    result.params_off = blk: {
         if (isNumber(msg[cmd_start])) {
             if (cmd_start + 3 >= msg.len)
                 return error.EndedEarly;
@@ -71,16 +70,6 @@ pub fn parseMsg(msg: []const u8) !Msg {
         }
     };
 
-    result.trail_off = null;
-    {
-        var off = result.middle_off;
-        while (off < msg.len) : (off += 1) {
-            if (msg[off] == ':') {
-                result.trail_off = off + 1;
-                break;
-            }
-        }
-    }
     return result;
 }
 
@@ -109,38 +98,84 @@ test "parse message" {
     try testing.expectEqual(try parseMsg(":foo NOTICE "), Msg {
         .prefix_limit = 4,
         .cmd = .{ .name = .{ .offset = 5, .limit = 11 } },
-        .middle_off = 12,
-        .trail_off = null,
+        .params_off = 12,
     });
     try testing.expectEqual(try parseMsg("NOTICE "), Msg {
         .prefix_limit = 0,
         .cmd = .{ .name = .{ .offset = 0, .limit = 6 } },
-        .middle_off = 7,
-        .trail_off = null,
+        .params_off = 7,
     });
     try testing.expectEqual(try parseMsg(":foo 094 "), Msg {
         .prefix_limit = 4,
         .cmd = .{ .code = 94 },
-        .middle_off = 9,
-        .trail_off = null,
+        .params_off = 9,
     });
     try testing.expectEqual(try parseMsg("123 "), Msg {
         .prefix_limit = 0,
         .cmd = .{ .code = 123 },
-        .middle_off = 4,
-        .trail_off = null,
+        .params_off = 4,
     });
 
     try testing.expectEqual(try parseMsg(":foo NOTICE :"), Msg {
         .prefix_limit = 4,
         .cmd = .{ .name = .{ .offset = 5, .limit = 11 } },
-        .middle_off = 12,
-        .trail_off = 13,
+        .params_off = 12,
     });
     try testing.expectEqual(try parseMsg(":foo NOTICE bar:"), Msg {
         .prefix_limit = 4,
         .cmd = .{ .name = .{ .offset = 5, .limit = 11 } },
-        .middle_off = 12,
-        .trail_off = 16,
+        .params_off = 12,
     });
+}
+
+pub const ParamIterator = struct {
+    ptr: [*]const u8,
+    limit: [*]const u8,
+    pub fn init(ptr: [*]const u8, limit: [*]const u8) ParamIterator {
+        return .{ .ptr = ptr, .limit = limit };
+    }
+    pub fn initSlice(s: []const u8) ParamIterator {
+        return ParamIterator.init(s.ptr, s.ptr + s.len);
+    }
+    pub fn next(self: *ParamIterator) ?[]const u8 {
+        while (true) {
+            if (self.ptr == self.limit)
+                return null;
+            if (self.ptr[0] != ' ')
+                break;
+            self.ptr += 1;
+        }
+        var start = self.ptr;
+        if (self.ptr[0] == ':') {
+            start += 1;
+            self.ptr = self.limit;
+        } else {
+            while (true) {
+                self.ptr += 1;
+                if (self.ptr == self.limit)
+                    break;
+                if (self.ptr[0] == ' ')
+                    break;
+            }
+        }
+        return start[0 .. @ptrToInt(self.ptr) - @ptrToInt(start)];
+    }
+};
+
+fn testParamIterator(case: []const u8, expected: []const []const u8) !void {
+    var it = ParamIterator.initSlice(case);
+    var expected_index: usize = 0;
+    while (it.next()) |param| {
+        try testing.expectEqualSlices(u8, param, expected[expected_index]);
+        expected_index += 1;
+    }
+    try testing.expect(expected_index == expected.len);
+}
+
+test "param iterator" {
+    try testParamIterator("a", &[_][]const u8 { "a" });
+    try testParamIterator("abc", &[_][]const u8 { "abc" });
+    try testParamIterator("abc def", &[_][]const u8 { "abc", "def" });
+    try testParamIterator("abc :def", &[_][]const u8 { "abc", "def" });
+    try testParamIterator(":abc def", &[_][]const u8 { "abc def" });
 }

@@ -6,7 +6,7 @@ const ssl = @import("ssl");
 
 const irc = @import("irc.zig");
 
-const log_setup_msg = std.log.scoped(.setup_msg);
+const log_msg = std.log.scoped(.msg);
 const log_channel_msg = std.log.scoped(.channel_msg);
 const log_send = std.log.scoped(.send);
 const log_event = std.log.scoped(.event);
@@ -28,7 +28,8 @@ pub fn go() !void {
     const user = "zig-irc-logger";
     //const login = Login { .pass = "some-password" };
     const login = null;
-    const channel = "zig";
+    //const channel = "zig";
+    const channel = "zigtest";
 
     const host: []const u8 = "irc.libera.chat";
     const allocator = std.heap.page_allocator;
@@ -110,38 +111,81 @@ const ClientState = struct {
             .channel = channel,
         };
     }
-    pub fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
-        switch (self.stage) {
-            .setup => log_setup_msg.info("{s}", .{msg}),
-            .joined => log_channel_msg.info("{s}", .{msg}),
-        }
-        const params = msg[parsed.middle_off..];
-        const trail_opt: ?[]const u8 = if (parsed.trail_off) |off| msg[off..] else null;
+    fn targetsMe(self: ClientState, target: []const u8) bool {
+        return mem.eql(u8, target, "*") or mem.eql(u8, target, self.user);
+    }
+    fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
+        log_msg.info("{s}", .{msg});
+        const params = msg[parsed.params_off..];
         switch (parsed.cmd) {
             .name => |name_pos| {
                 const name = msg[name_pos.offset..name_pos.limit];
-                if (std.mem.eql(u8, "NOTICE", name)) {
-                    if (trail_opt) |trail| {
-                        if (mem.eql(u8, trail, "*** No Ident response")) {
-                            log_event.info("Got 'No Ident response', sending user...", .{});
-                            try loggyWriteCmd(writer, "NICK {s}", .{self.user});
-                            try loggyWriteCmd(writer, "USER {s} * * :{0s}", .{self.user});
-                        } else if (mem.startsWith(u8, trail, "You are now identified for ")) {
-                            try loggyWriteCmd(writer, "JOIN #{s}", .{self.channel});
-                        } else if (mem.startsWith(u8, trail, "Invalid password for ")) {
-                            return error.InvalidPassword;
-                        } else {
-                            //log_event.warn("ignoring msg", .{});
-                        }
+                if (mem.eql(u8, "NOTICE", name)) {
+                    var param_it = irc.ParamIterator.initSlice(params);
+                    const target = param_it.next() orelse {
+                        log_event.err("NOTICE missing target param", .{});
+                        return error.MalformedMessage;
+                    };
+                    const notice_msg = param_it.next() orelse {
+                        log_event.err("NOTICE missing message param", .{});
+                        return error.MalformedMessage;
+                    };
+                    if (null != param_it.next()) {
+                        log_event.err("NOTICE got too many params", .{});
+                        return error.MalformedMessage;
                     }
-                } else if (std.mem.eql(u8, "PING", name)) {
-                    try loggyWriteCmd(writer, "PONG {s}", .{params});
-                } else if (std.mem.eql(u8, "JOIN", name)) {
-                    if (std.mem.startsWith(u8, params, "#") and std.mem.eql(u8, params[1..], self.channel)) {
-                        self.stage = .joined;
+                    if (!self.targetsMe(target)) {
+                        log_event.err("NOTICE targets '{s}' which isn't me?", .{target});
+                        // TODO: I'm sure this can happen, just don't know what to do yet
+                        return error.UnexpectedMessageTarget;
+                    }
+                    if (mem.eql(u8, notice_msg, "*** No Ident response")) {
+                        log_event.info("Got 'No Ident response', sending user...", .{});
+                        try loggyWriteCmd(writer, "NICK {s}", .{self.user});
+                        try loggyWriteCmd(writer, "USER {s} * * :{0s}", .{self.user});
+                    } else if (mem.startsWith(u8, notice_msg, "You are now identified for ")) {
+                        try loggyWriteCmd(writer, "JOIN #{s}", .{self.channel});
+                    } else if (mem.startsWith(u8, notice_msg, "Invalid password for ")) {
+                        return error.InvalidPassword;
                     } else {
-                        log_event.err("expected to join '#{s}' but joined '{s}'?", .{self.channel, params});
+                        //log_event.warn("ignoring msg", .{});
+                    }
+                } else if (mem.eql(u8, "PING", name)) {
+                    try loggyWriteCmd(writer, "PONG {s}", .{params});
+                } else if (mem.eql(u8, "JOIN", name)) {
+                    var param_it = irc.ParamIterator.initSlice(params);
+                    const channels = param_it.next() orelse {
+                        log_event.err("JOIN missing channels param", .{});
+                        return error.MalformedMessage;
+                    };
+                    if (null != param_it.next()) {
+                        log_event.err("JOIN got more params than expected", .{});
+                        return error.UnexpectedMessage;
+                    }
+                    if (!mem.startsWith(u8, channels, "#") or !mem.eql(u8, channels[1..], self.channel)) {
+                        log_event.err("expected to join '#{s}' but joined '{s}'?", .{self.channel, channels});
                         return error.JoinedWrongChannel;
+                    }
+                    self.stage = .joined;
+                } else if (mem.eql(u8, "PRIVMSG", name)) {
+                    var param_it = irc.ParamIterator.initSlice(params);
+                    const target = param_it.next() orelse {
+                        log_event.err("PRIVMSG missing target param", .{});
+                        return error.MalformedMessage;
+                    };
+                    const private_msg = param_it.next() orelse {
+                        log_event.err("PRIVMSG missing message param", .{});
+                        return error.MalformedMessage;
+                    };
+                    if (null != param_it.next()) {
+                        log_event.err("PRIVMSG got too many params", .{});
+                        return error.MalformedMessage;
+                    }
+                    if (std.mem.startsWith(u8, target, "#") and std.mem.eql(u8, target[1..], self.channel)) {
+                        const from = if (parsed.prefix_limit == 0) "???" else msg[1..parsed.prefix_limit];
+                        log_channel_msg.info("{s}: {s}", .{from, private_msg});
+                    } else {
+                        log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
                     }
                 } else {
                     //log_event.warn("ignoring msg", .{});
