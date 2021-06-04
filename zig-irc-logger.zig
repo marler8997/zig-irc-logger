@@ -35,8 +35,6 @@ const log_msg = std.log.scoped(.msg);
 const log_send = std.log.scoped(.send);
 const log_event = std.log.scoped(.event);
 
-const stdout_writer = std.io.getStdOut().writer();
-
 fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void {
     log_send.info("sending '" ++ fmt ++ "'", args);
     try writer.print(fmt ++ "\r\n", args);
@@ -57,6 +55,29 @@ pub fn go() !void {
     const login = null;
     //const channel = "zig";
     const channel = "zigtest";
+    const out_dir_path = "logs";
+
+    const out_file = blk: {
+        var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
+        defer out_dir.close();
+        const timestamp = std.time.milliTimestamp();
+        const base_name = try std.fmt.allocPrint(std.heap.page_allocator, "{}", .{timestamp});
+        defer std.heap.page_allocator.free(base_name);
+        if (out_dir.access(base_name, .{})) {
+            log_event.err("refusing to overwrite '{s}/{s}'", .{out_dir_path, base_name});
+            return error.OutputFileAlreadyExists;
+        } else |_| { }
+        const out_file = try out_dir.createFile(base_name, .{
+            .truncate = false,
+        });
+        out_dir.deleteFile("current") catch |e| switch (e) {
+            error.FileNotFound => {},
+            else => return e,
+        };
+        try out_dir.symLink(base_name, "current", .{});
+        break :blk out_file;
+    };
+
 
 
     const allocator = std.heap.page_allocator;
@@ -69,7 +90,7 @@ pub fn go() !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(user, login, channel);
+    var state = ClientState.init(out_file.writer(), user, login, channel);
 
     var data_len: usize = 0;
 
@@ -125,13 +146,15 @@ const ClientState = struct {
         setup,
         joined,
     };
+    channel_writer: std.fs.File.Writer,
     stage: Stage,
     user: []const u8,
     login: ?Login,
     channel: []const u8,
 
-    pub fn init(user: []const u8, login: ?Login, channel: []const u8) ClientState {
+    pub fn init(channel_writer: std.fs.File.Writer, user: []const u8, login: ?Login, channel: []const u8) ClientState {
         return .{
+            .channel_writer = channel_writer,
             .stage = .setup,
             .user = user,
             .login = login,
@@ -210,7 +233,7 @@ const ClientState = struct {
                     }
                     if (std.mem.startsWith(u8, target, "#") and std.mem.eql(u8, target[1..], self.channel)) {
                         const from = if (parsed.prefix_limit == 0) "???" else msg[1..parsed.prefix_limit];
-                        try stdout_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
+                        try self.channel_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
                     }
