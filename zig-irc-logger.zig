@@ -48,6 +48,9 @@ pub fn go() !void {
     const channel = "zigtest";
     const out_dir_path = "logs";
 
+    // first clean the partial files in out_dir in case there were any leftover from a previous run
+    try cleanPartialFiles(out_dir_path);
+
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
     defer std.heap.page_allocator.free(buf);
@@ -274,4 +277,19 @@ fn writeMsg(out_dir_path: []const u8, from: []const u8, msg: []const u8) !void {
         const new_name_len = makeNamePath(&name_buf, out_dir_path, timestamp);
         std.debug.assert(name.len == new_name_len);
     }
+}
+
+fn cleanPartialFiles(out_dir_path: []const u8) !void {
+    var clean_count: usize = 0;
+    var dir = try std.fs.cwd().openDir(out_dir_path, .{.iterate=true});
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".partial")) {
+            std.log.info("removing '{s}/{s}'", .{out_dir_path, entry.name});
+            try dir.deleteFile(entry.name);
+            clean_count += 1;
+        }
+    }
+    std.log.info("removed {} '.partial' files from '{s}' directory", .{clean_count, out_dir_path});
 }
