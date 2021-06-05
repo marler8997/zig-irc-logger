@@ -4,6 +4,7 @@ pub fn build(b: *std.build.Builder) !void {
     const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
     try addLogger(b, target, mode);
+    try addPublisher(b, target, mode);
     try addWebServer(b, target, mode);
 }
 
@@ -37,6 +38,22 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     }
 
     const run_step = b.step("run-logger", "Run the zig-irc-logger exe");
+    run_step.dependOn(&run_cmd.step);
+}
+
+fn addPublisher(b: *std.build.Builder, target: anytype, mode: anytype) !void {
+    const exe = b.addExecutable("zig-irc-publisher", "publisher.zig");
+    exe.setTarget(target);
+    exe.setBuildMode(mode);
+    exe.install();
+
+    const run_cmd = exe.run();
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run-publisher", "Run the zig-irc-publisher exe");
     run_step.dependOn(&run_cmd.step);
 }
 
