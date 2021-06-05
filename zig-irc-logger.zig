@@ -1,27 +1,18 @@
-//! Connects to the #zig irc channel and outputs channel messages to STDOUT
-//! The output format is
+//! Connects to the #zig irc channel and saves channel messages to the
+//! filesystem.
 //!
-//!     TIMESTAMP\nFROM\nMSG\n\n
+//! Each message is written to it's own file whose name is determined by
+//! its timestamp and whose contents is "FROM\nMSG".
 //!
-//! Example:
-//! ----------------------------------------------------------------------
-//! 1622787890625
-//! marler8997!~marler899@204.229.3.4
-//! this is a test!
+//! When this tool creates a new file, its filename will temporarily end with
+//! ".partial".  This tells other tools that the logger is still writing to
+//! the file and not to touch it.  Once the ".partial" extension has been
+//! removed, the file is free to be used or even removed by another tool.
 //!
-//! 1622787896918
-//! marler8997!~marler899@204.229.3.4
-//! is this working?
-//!
-//! ----------------------------------------------------------------------
-//!
-//! Why this format?
-//!   1. Simplicity
-//!        - it has only 1 special character, the '\n' character.
-//!        - there is no need for escaping '\n' because neither TIMESTAMP/FROM/MSG can contain it
-//!   2. Contains only printable characters
-//!   3. I chose to end each message with double-newline so you can find the start of a message
-//!      in the middle of a stream.
+//! Note that this tool is intentionally simple to minimize downtime.
+//! It's design also facilitates multiple redundant clients saving files
+//! to multiple output directories and allowing another tool to compare
+//! and combine them to get the final output if one of them misses something.
 //!
 const std = @import("std");
 const mem = std.mem;
@@ -57,29 +48,6 @@ pub fn go() !void {
     const channel = "zigtest";
     const out_dir_path = "logs";
 
-    const out_file = blk: {
-        var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
-        defer out_dir.close();
-        const timestamp = std.time.milliTimestamp();
-        const base_name = try std.fmt.allocPrint(std.heap.page_allocator, "{}", .{timestamp});
-        defer std.heap.page_allocator.free(base_name);
-        if (out_dir.access(base_name, .{})) {
-            log_event.err("refusing to overwrite '{s}/{s}'", .{out_dir_path, base_name});
-            return error.OutputFileAlreadyExists;
-        } else |_| { }
-        const out_file = try out_dir.createFile(base_name, .{
-            .truncate = false,
-        });
-        out_dir.deleteFile("current") catch |e| switch (e) {
-            error.FileNotFound => {},
-            else => return e,
-        };
-        try out_dir.symLink(base_name, "current", .{});
-        break :blk out_file;
-    };
-
-
-
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
     defer std.heap.page_allocator.free(buf);
@@ -90,7 +58,7 @@ pub fn go() !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(out_file.writer(), user, login, channel);
+    var state = ClientState.init(out_dir_path, user, login, channel);
 
     var data_len: usize = 0;
 
@@ -146,17 +114,19 @@ const ClientState = struct {
         setup,
         joined,
     };
-    channel_writer: std.fs.File.Writer,
+    out_dir: []const u8,
     stage: Stage,
     user: []const u8,
+    user_count: u16,
     login: ?Login,
     channel: []const u8,
 
-    pub fn init(channel_writer: std.fs.File.Writer, user: []const u8, login: ?Login, channel: []const u8) ClientState {
+    pub fn init(out_dir: []const u8, user: []const u8, login: ?Login, channel: []const u8) ClientState {
         return .{
-            .channel_writer = channel_writer,
+            .out_dir = out_dir,
             .stage = .setup,
             .user = user,
+            .user_count = 0,
             .login = login,
             .channel = channel,
         };
@@ -233,7 +203,8 @@ const ClientState = struct {
                     }
                     if (std.mem.startsWith(u8, target, "#") and std.mem.eql(u8, target[1..], self.channel)) {
                         const from = if (parsed.prefix_limit == 0) "???" else msg[1..parsed.prefix_limit];
-                        try self.channel_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
+                        //try self.channel_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
+                        try writeMsg(self.out_dir, from, private_msg);
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
                     }
@@ -242,7 +213,6 @@ const ClientState = struct {
                 }
             },
             .code => |code| {
-                // TODO: handle code 433 (Nickname is already in use)
                 if (code == 376) {
                     log_event.info("Got '376' '{s}', sending command to join #{s}...", .{params, self.channel});
                     if (self.login) |login| {
@@ -250,6 +220,10 @@ const ClientState = struct {
                     } else {
                         try loggyWriteCmd(writer, "JOIN #{s}", .{self.channel});
                     }
+                } else if (code == 433) { // nick already in use
+                    self.user_count = self.user_count +% 1;
+                    try loggyWriteCmd(writer, "NICK {s}{}", .{self.user, self.user_count});
+                    try loggyWriteCmd(writer, "USER {s}{} * * :{0s}", .{self.user, self.user_count});
                 } else if (code == 477) {
                     return error.CannotJoinChannel;
                 } else {
@@ -259,3 +233,45 @@ const ClientState = struct {
         }
     }
 };
+
+fn makeNamePath(buf: []u8, out_dir_path: []const u8, timestamp: i64) usize {
+    return (std.fmt.bufPrint(buf, "{s}/{}", .{out_dir_path, timestamp}) catch unreachable).len;
+}
+
+fn writeMsg(out_dir_path: []const u8, from: []const u8, msg: []const u8) !void {
+    const MAX_FILENAME = 255;
+
+    var name_buf: [MAX_FILENAME]u8 = undefined;
+    var tmp_name_buf: [MAX_FILENAME]u8 = undefined;
+
+    var timestamp = std.time.milliTimestamp();
+
+    const name = name_buf[0..makeNamePath(&name_buf, out_dir_path, timestamp)];
+    const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.partial", .{name}) catch unreachable;
+
+    {
+        const tmp_file = try std.fs.cwd().createFile(tmp_name, .{});
+        defer tmp_file.close();
+        try tmp_file.writer().print("{s}\n{s}", .{from, msg});
+    }
+
+    const simulate_existing_file_error = false;
+    if (simulate_existing_file_error) {
+        (std.fs.cwd().createFile(name, .{}) catch unreachable).close();
+    }
+
+    while (true) {
+        // TODO: replace access call with rename with RENAME_NOREPLACE flag
+        std.fs.cwd().access(name, .{}) catch |e| switch (e) {
+            error.FileNotFound => {
+                try std.fs.cwd().rename(tmp_name, name);
+                break;
+            },
+            else => return e,
+        };
+        timestamp += 1;
+        //log_event.info("moving log to next timestamp '{}' to resolve timestamp collision", .{timestamp});
+        const new_name_len = makeNamePath(&name_buf, out_dir_path, timestamp);
+        std.debug.assert(name.len == new_name_len);
+    }
+}
