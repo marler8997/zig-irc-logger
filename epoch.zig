@@ -29,14 +29,27 @@ pub fn getDaysInYear(year: Year) u9 {
 
 pub const YearLeapKind = enum(u1) {not_leap, leap};
 
+const Month = enum(u4) {
+    jan, feb, mar, apr, may, jun,
+    jul, aug, sep, oct, nov, dec,
+
+    /// return the numeric calendar value for the given month
+    /// i.e. jan=1, feb=2, etc
+    pub fn numeric(self: Month) u4 {
+        return @enumToInt(self) + 1;
+    }
+};
+
 /// Get the number of days in the given month
-pub fn getDaysInMonthIndex(leap_year: YearLeapKind, month_index: u4) u5 {
-    std.debug.assert(month_index <= 11);
-    const table = [2][12]u2 {
-        [12]u2 { 3, 0, 3, 2, 3, 2, 3, 3, 2, 3, 2, 3},
-        [12]u2 { 3, 1, 3, 2, 3, 2, 3, 3, 2, 3, 2, 3},
+pub fn getDaysInMonth(leap_year: YearLeapKind, month: Month) u5 {
+    return switch (month) {
+        .jan  => 31,
+        .feb => @as(u5, switch (leap_year) { .leap => 29, .not_leap => 28}),
+        .mar => 31, .apr => 30, .may => 31,
+        .jun => 30, .jul => 31, .aug => 31,
+        .sep => 30, .oct => 31,
+        .nov => 30, .dec => 31,
     };
-    return 28 + @intCast(u5, table[@enumToInt(leap_year)][month_index]);
 }
 
 pub const YearAndDay = struct {
@@ -45,22 +58,22 @@ pub const YearAndDay = struct {
     day: u9,
 
     pub fn calculateMonthDay(self: YearAndDay) MonthAndDay {
-        var month_index: u4 = 0;
+        var month: Month = .jan;
         var days_left = self.day;
-        const is_leap_year: YearLeapKind = if (isLeapYear(self.year)) .leap else .not_leap;
+        const leap_kind: YearLeapKind = if (isLeapYear(self.year)) .leap else .not_leap;
         while (true) {
-            const days_in_month = getDaysInMonthIndex(is_leap_year, month_index);
+            const days_in_month = getDaysInMonth(leap_kind, month);
             if (days_left <= days_in_month)
                 break;
             days_left -= days_in_month;
-            month_index += 1;
+            month = @intToEnum(Month, @enumToInt(month) + 1);
         }
-        return .{ .month_index = month_index, .day_index = @intCast(u5, days_left) };
+        return .{ .month = month, .day_index = @intCast(u5, days_left) };
     }
 };
 
 pub const MonthAndDay = struct {
-    month_index: u4, /// months into the year (0 to 11)
+    month: Month,
     day_index: u5, // days into the month (0 to 30)
 };
 
@@ -135,12 +148,12 @@ fn testEpoch(secs: u64, expected_year_day: YearAndDay, expected_month_day: Month
 
 test {
     try testEpoch(0, .{ .year = 1970, .day = 0 }, .{
-        .month_index = 0, .day_index = 0,
+        .month = .jan, .day_index = 0,
     }, .{
         .hours_into_day=0, .minutes_into_hour=0, .seconds_into_minute=0
     });
     try testEpoch(1622924906, .{ .year = 2021, .day = 31+28+31+30+31+4 }, .{
-        .month_index = 5, .day_index = 4,
+        .month = .jun, .day_index = 4,
     }, .{
         .hours_into_day=20, .minutes_into_hour=28, .seconds_into_minute=26
     });

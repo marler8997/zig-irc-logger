@@ -263,7 +263,7 @@ fn pushRepoChange(log_repo_path: []const u8) !void {
 
 fn formatRepoLogFilename(buf: []u8, year_day: epoch.YearAndDay, month_day: epoch.MonthAndDay) usize {
     return (std.fmt.bufPrint(buf, "{}/{:0>2}-{:0>2}.txt", .{
-        year_day.year, month_day.month_index+1, month_day.day_index+1}) catch unreachable).len;
+        year_day.year, month_day.month.numeric(), month_day.day_index+1}) catch unreachable).len;
 }
 
 fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir) !void {
