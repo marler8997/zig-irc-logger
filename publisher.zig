@@ -1,3 +1,15 @@
+//! Watches the output directory of zig-irc-logger for new files being "moved"
+//! into it, which is the last step zig-irc-logger will do when saving a new
+//! IRC message.
+//!
+//! Both at startup and when a new message is detected, publisher will take all
+//! the new messages in order and add them to the zig-irc-logs git repo.
+//!
+//! Note that if this program stops or fails then it's not a big deal.  It will just
+//! stop live updates from being published until it starts again, but IRC messages
+//! will still be saved to disk by zig-irc-logger.  This program is designed to be
+//! restarted and continue where it left off.
+//!
 const std = @import("std");
 const os = std.os;
 const linux = os.linux;
@@ -7,10 +19,61 @@ const epoch = @import("epoch.zig");
 
 var global_event_buf: [4096]u8 align(@alignOf(inotify_event)) = undefined;
 
+fn getArgOption(args: [][]const u8, i: *usize) []const u8 {
+    i.* = i.* + 1;
+    if (i.* >= args.len) {
+        std.log.err("option {s} requires an argument", .{args[i.* - 1]});
+        std.os.exit(1);
+    }
+    return args[i.*];
+}
+
+pub fn usage() void {
+    std.debug.print(
+        \\Usage: zig-irc-publisher --logger-dir DIR --repo DIR
+        \\
+    , .{});
+}
+
 pub fn main() !u8 {
-    const out_dir_path = "zigtest-logs";
-    //const log_repo_path = "zig-irc-logs-test-dir";
-    const log_repo_path = "zig-irc-logs";
+    var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena = &arena_store.allocator;
+
+    var logger_dir_option: ?[]const u8 = null;
+    var repo_option: ?[]const u8 = null;
+    {
+        const args = (std.process.argsAlloc(arena) catch @panic("out of memory"))[1..];
+        if (args.len == 0) {
+            usage();
+            return @as(u8, 1);
+        }
+        // don't free args
+        var arg_index: usize = 0;
+        while (arg_index < args.len) : (arg_index += 1) {
+            const arg = args[arg_index];
+            if (std.mem.eql(u8, arg, "--logger-dir")) {
+                logger_dir_option = getArgOption(args, &arg_index);
+            } else if (std.mem.eql(u8, arg, "--repo")) {
+                repo_option = getArgOption(args, &arg_index);
+            } else {
+                std.log.err("unknown command-line arg '{s}'", .{arg});
+                return 1;
+            }
+        }
+    }
+    const logger_dir = logger_dir_option orelse {
+        std.log.err("missing '--logger-dir DIR' command-line option", .{});
+        return 1;
+    };
+    const repo = repo_option orelse {
+        std.log.err("missing '--repo DIR' command-line option", .{});
+        return 1;
+    };
+
+    return go(logger_dir, repo);
+}
+
+pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
 
     // just keep this directory open
     var log_repo_dir = std.fs.cwd().openDir(log_repo_path, .{}) catch |e| switch (e) {
@@ -22,12 +85,21 @@ pub fn main() !u8 {
     };
     //defer log_repo_dir.close();
 
-    try publishFiles(out_dir_path, log_repo_dir);
+    // double check log_repo_dir is a repo
+    log_repo_dir.access(".git", .{}) catch |e| switch (e) {
+        error.FileNotFound => {
+            std.log.err("log repo '{s}' doesn't seem to be a GIT repo, missing .git folder", .{log_repo_path});
+            return 1;
+        },
+        else => return e,
+    };
+
+    try publishFiles(logger_dir, log_repo_dir);
 
     const inotify_fd = try os.inotify_init1(0); // linux.IN_CLOEXEC??
-    const watch_fd = os.inotify_add_watch(inotify_fd, out_dir_path, linux.IN_MOVED_TO) catch |e| switch(e) {
+    const watch_fd = os.inotify_add_watch(inotify_fd, logger_dir, linux.IN_MOVED_TO) catch |e| switch(e) {
         error.FileNotFound => {
-            std.log.err("log directory '{s}' does not exist", .{out_dir_path});
+            std.log.err("log directory '{s}' does not exist", .{logger_dir});
             return 1;
         },
         else => return e,
@@ -64,7 +136,7 @@ pub fn main() !u8 {
             }
             const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
             //handleNewFile(log_repo, name);
-            try publishFiles(out_dir_path, log_repo_dir);
+            try publishFiles(logger_dir, log_repo_dir);
             try pushRepoChange(log_repo_path);
             offset += event_size;
             if (offset == read_result)
@@ -91,9 +163,9 @@ pub fn main() !u8 {
 //    std.log.info("TODO: handle new message '{}'", .{timestamp});
 //}
 
-fn publishFiles(out_dir_path: []const u8, log_repo_dir: std.fs.Dir) !void {
+fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !void {
     // TODO: maybe handle some of the openDir errors?
-    var dir = try std.fs.cwd().openDir(out_dir_path, .{.iterate=true});
+    var dir = try std.fs.cwd().openDir(logger_dir, .{.iterate=true});
     defer dir.close();
 
     const MinMax = struct {min: u32, max: u32};
@@ -189,6 +261,11 @@ fn pushRepoChange(log_repo_path: []const u8) !void {
     }
 }
 
+fn formatRepoLogFilename(buf: []u8, year_day: epoch.YearAndDay, month_day: epoch.MonthAndDay) usize {
+    return (std.fmt.bufPrint(buf, "{}/{:0>2}-{:0>2}.txt", .{
+        year_day.year, month_day.month_index+1, month_day.day_index+1}) catch unreachable).len;
+}
+
 fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir) !void {
     const text = try file.readToEndAlloc(std.heap.page_allocator, 8192);
     defer std.heap.page_allocator.free(text);
@@ -203,13 +280,51 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         return error.FileHasInvalidTimestamp;
     };
 
-    const year_day = ((epoch.EpochSeconds { .secs = timestamp }).getEpochDay()).calculateYearDay();
+    const epoch_day = (epoch.EpochSeconds { .secs = timestamp }).getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
 
-    var repo_filename_buf: [30]u8 = undefined;
-    const repo_filename = std.fmt.bufPrint(&repo_filename_buf, "{}/{:0>2}-{:0>2}.txt", .{
-        year_day.year, month_day.month_index+1, month_day.day_index+1}) catch unreachable;
+    const repo_log_file_buf_len = 30;
+
+    var repo_filename_buf: [repo_log_file_buf_len]u8 = undefined;
+    var repo_filename = repo_filename_buf[0..
+        formatRepoLogFilename(&repo_filename_buf, year_day, month_day)];
     std.log.info("[DEBUG] {} > {s}", .{timestamp, repo_filename});
+
+    // TODO: check if we are behind by a day, if we are, then add the new messages to the newest day.
+    //       also check if we are behind by 2 days, if so, then report an error and quit.
+    //       I think maintaining message order is more important than if the timestamps appear to
+    //       be out of order as a result of daylight savings or a system clock update or something.
+    var now_link_buf: [repo_log_file_buf_len]u8 = undefined;
+    var now_link = blk: {
+        break :blk log_repo_dir.readLink("now", &now_link_buf) catch |e| switch (e) {
+            error.FileNotFound => {
+                try log_repo_dir.symLink(repo_filename, "now", .{});
+                break :blk try log_repo_dir.readLink("now", &now_link_buf);
+            },
+            else => return e,
+        };
+    };
+
+    var tomorrow_filename_buf: [repo_log_file_buf_len]u8 = undefined;
+
+    // TODO: write a test for this!!!!!!!!
+    if (!std.mem.eql(u8, repo_filename, now_link)) {
+        // If we are off by more than a day, then we might have a serious issue, quit
+        const tomorrow = epoch.EpochDay { .day = epoch_day.day + 1 };
+        const tomorrow_year_day = tomorrow.calculateYearDay();
+        const tomorrow_filename = tomorrow_filename_buf[0..formatRepoLogFilename(&tomorrow_filename_buf,
+            tomorrow_year_day, tomorrow_year_day.calculateMonthDay())];
+        if (!std.mem.eql(u8, tomorrow_filename, now_link)) {
+            std.log.err("got a timestamp '{s}' that is older than a day, repo's now link is '{s}'", .{repo_filename, now_link});
+            // TODO: do something to tell publisher not to start until this timestamp issue is fixed
+            return error.TimestampsMessedUp;
+        }
+        // update now link
+        return error.ImplementUpdateNowLink;
+
+        //repo_filename = tomorrow_filename;
+    }
 
     {
         const log_file = blk: {

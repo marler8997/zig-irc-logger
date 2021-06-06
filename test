@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+set -e
+
+# kill whole process group on exit
+trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
+
+# test publisher
+rm -rf scratch
+mkdir scratch
+
+mkdir scratch/logger-out
+mkdir scratch/zig-irc-logs
+git -C scratch/zig-irc-logs init
+
+zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs&
+
+function addMsg() {
+    num=$1
+    timestamp=$2
+    from=$3
+    msg="$4"
+    echo $timestamp > scratch/logger-out/${num}.partial
+    echo "$from" >> scratch/logger-out/${num}.partial
+    printf "$msg" >> scratch/logger-out/${num}.partial
+    mv scratch/logger-out/${num}.partial scratch/logger-out/${num}
+}
+
+addMsg 0 1622992862 somebody "hello there"
+
+
+# TODO: wait for publisher to publish the file
+sleep 3
+
+# TODO: test what happens when we create really new file, like 999999/01-01.txt
+
+
+
+
+echo Success
