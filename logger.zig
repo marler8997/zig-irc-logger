@@ -32,34 +32,84 @@ fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void
     try writer.print(fmt ++ "\r\n", args);
 }
 
+fn getArgOption(args: [][]const u8, i: *usize) []const u8 {
+    i.* = i.* + 1;
+    if (i.* >= args.len) {
+        std.log.err("option {s} requires an argument", .{args[i.* - 1]});
+        std.os.exit(1);
+    }
+    return args[i.*];
+}
+
+pub fn usage() void {
+    std.debug.print(
+        \\Usage: zig-irc-logger --channel NAME --dir DIR
+        \\
+    , .{});
+}
+
 pub fn main() u8 {
-    go() catch |e| {
+    var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena = &arena_store.allocator;
+
+    var channel_option: ?[]const u8 = null;
+    var out_dir_option: ?[]const u8 = null;
+    {
+        const args = (std.process.argsAlloc(arena) catch @panic("out of memory"))[1..];
+        if (args.len == 0) {
+            usage();
+            return 1;
+        }
+        // don't free args
+        var arg_index: usize = 0;
+        while (arg_index < args.len) : (arg_index += 1) {
+            const arg = args[arg_index];
+            if (std.mem.eql(u8, arg, "--channel")) {
+                channel_option = getArgOption(args, &arg_index);
+            } else if (std.mem.eql(u8, arg, "--dir")) {
+                out_dir_option = getArgOption(args, &arg_index);
+            } else {
+                std.log.err("unknown command-line arg '{s}'", .{arg});
+                return 1;
+            }
+        }
+    }
+    const channel = channel_option orelse {
+        std.log.err("missing '--channel NAME' command-line option", .{});
+        return 1;
+    };
+    const out_dir = out_dir_option orelse {
+        std.log.err("missing '--dir DIR' command-line option", .{});
+        return 1;
+    };
+
+    go(channel, out_dir) catch |e| {
         std.log.err("{}", .{e});
         return 1;
     };
     unreachable;
 }
 
-pub fn go() !void {
+pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
     const host: []const u8 = "irc.libera.chat";
     const user = "zig-irc-logger";
     //const login = Login { .pass = "some-password" };
     const login = null;
-    //const channel = "zig";
-    const channel = "zigtest";
-
-    const out_dir_path = channel ++ "-logs";
 
     // first clean the partial files in out_dir in case there were any leftover from a previous run
     var next_msg_num = try cleanPartialFilesAndFindNextMsgNum(out_dir_path);
     log_event.info("next msg num is {}", .{next_msg_num});
 
-    const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
     defer std.heap.page_allocator.free(buf);
 
+
     var stream_pinned: ssl.Stream.Pinned = undefined;
-    var stream = try ssl.Stream.init(try std.net.tcpConnectToHost(allocator, host, ssl.irc_port), host, &stream_pinned);
+    var stream = blk: {
+        var a = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer a.deinit();
+        break :blk try ssl.Stream.init(try std.net.tcpConnectToHost(&a.allocator, host, ssl.irc_port), host, &stream_pinned);
+    };
     defer stream.deinit();
     const reader = stream.reader();
     const writer = stream.writer();
