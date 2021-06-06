@@ -266,8 +266,7 @@ const ClientState = struct {
                             log_event.info("reset msg counter from {} back to 0", .{self.next_msg_num});
                             self.next_msg_num = 0;
                         }
-                        // TODO: is this the right way to get the UTC epoch timestamp?
-                        try writeMsg(self.out_dir, self.next_msg_num, @intCast(u64, std.time.milliTimestamp()), from, private_msg);
+                        try writeMsg(self.out_dir, self.next_msg_num, try getTimestamp(), from, private_msg);
                         self.next_msg_num += 1;
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
@@ -297,6 +296,12 @@ const ClientState = struct {
         }
     }
 };
+
+fn getTimestamp() !u64 {
+    var ts: os.timespec = undefined;
+    try os.clock_gettime(os.CLOCK_REALTIME, &ts);
+    return @intCast(u64, ts.tv_sec);
+}
 
 fn makeNamePath(buf: []u8, out_dir_path: []const u8, msg_num: u32) usize {
     return (std.fmt.bufPrint(buf, "{s}/{}", .{out_dir_path, msg_num}) catch unreachable).len;
