@@ -1,8 +1,9 @@
-//! Connects to the #zig irc channel and saves channel messages to the
-//! filesystem.
+//! Connects to the #zig irc channel and saves channel messages to a directory.
 //!
-//! Each message is written to it's own file whose name is determined by
-//! its timestamp and whose contents is "FROM\nMSG".
+//! Each message is written to its own file whose name taken from on an ongoing
+//! counter. If the directory is emptied, then the counter is reset back to 0.
+//! If the logger is restarted, it will check the files to restore the last counter
+//! value it had before it stopped.
 //!
 //! When this tool creates a new file, its filename will temporarily end with
 //! ".partial".  This tells other tools that the logger is still writing to
@@ -50,7 +51,8 @@ pub fn go() !void {
     const out_dir_path = channel ++ "-logs";
 
     // first clean the partial files in out_dir in case there were any leftover from a previous run
-    try cleanPartialFiles(out_dir_path);
+    var next_msg_num = try cleanPartialFilesAndFindNextMsgNum(out_dir_path);
+    log_event.info("next msg num is {}", .{next_msg_num});
 
     const allocator = std.heap.page_allocator;
     var buf = try std.heap.page_allocator.alloc(u8, 4096);
@@ -62,7 +64,7 @@ pub fn go() !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(out_dir_path, user, login, channel);
+    var state = ClientState.init(out_dir_path, next_msg_num, user, login, channel);
 
     var data_len: usize = 0;
 
@@ -119,15 +121,17 @@ const ClientState = struct {
         joined,
     };
     out_dir: []const u8,
+    next_msg_num: u32,
     stage: Stage,
     user: []const u8,
     user_count: u16,
     login: ?Login,
     channel: []const u8,
 
-    pub fn init(out_dir: []const u8, user: []const u8, login: ?Login, channel: []const u8) ClientState {
+    pub fn init(out_dir: []const u8, next_msg_num: u32, user: []const u8, login: ?Login, channel: []const u8) ClientState {
         return .{
             .out_dir = out_dir,
+            .next_msg_num = next_msg_num,
             .stage = .setup,
             .user = user,
             .user_count = 0,
@@ -207,8 +211,14 @@ const ClientState = struct {
                     }
                     if (std.mem.startsWith(u8, target, "#") and std.mem.eql(u8, target[1..], self.channel)) {
                         const from = if (parsed.prefix_limit == 0) "???" else msg[1..parsed.prefix_limit];
-                        //try self.channel_writer.print("{}\n{s}\n{s}\n\n", .{std.time.milliTimestamp(), from, private_msg});
-                        try writeMsg(self.out_dir, from, private_msg);
+
+                        if (self.next_msg_num != 0 and try dirIsEmpty(self.out_dir)) {
+                            log_event.info("reset msg counter from {} back to 0", .{self.next_msg_num});
+                            self.next_msg_num = 0;
+                        }
+                        // TODO: is this the right way to get the UTC epoch timestamp?
+                        try writeMsg(self.out_dir, self.next_msg_num, @intCast(u64, std.time.milliTimestamp()), from, private_msg);
+                        self.next_msg_num += 1;
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
                     }
@@ -238,25 +248,23 @@ const ClientState = struct {
     }
 };
 
-fn makeNamePath(buf: []u8, out_dir_path: []const u8, timestamp: i64) usize {
-    return (std.fmt.bufPrint(buf, "{s}/{}", .{out_dir_path, timestamp}) catch unreachable).len;
+fn makeNamePath(buf: []u8, out_dir_path: []const u8, msg_num: u32) usize {
+    return (std.fmt.bufPrint(buf, "{s}/{}", .{out_dir_path, msg_num}) catch unreachable).len;
 }
 
-fn writeMsg(out_dir_path: []const u8, from: []const u8, msg: []const u8) !void {
+fn writeMsg(out_dir_path: []const u8, msg_num: u32, timestamp: u64, from: []const u8, msg: []const u8) !void {
     const MAX_FILENAME = 255;
 
     var name_buf: [MAX_FILENAME]u8 = undefined;
     var tmp_name_buf: [MAX_FILENAME]u8 = undefined;
 
-    var timestamp = std.time.milliTimestamp();
-
-    const name = name_buf[0..makeNamePath(&name_buf, out_dir_path, timestamp)];
+    const name = name_buf[0..makeNamePath(&name_buf, out_dir_path, msg_num)];
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.partial", .{name}) catch unreachable;
 
     {
         const tmp_file = try std.fs.cwd().createFile(tmp_name, .{});
         defer tmp_file.close();
-        try tmp_file.writer().print("{s}\n{s}", .{from, msg});
+        try tmp_file.writer().print("{}\n{s}\n{s}", .{timestamp, from, msg});
     }
 
     const simulate_existing_file_error = false;
@@ -264,23 +272,18 @@ fn writeMsg(out_dir_path: []const u8, from: []const u8, msg: []const u8) !void {
         (std.fs.cwd().createFile(name, .{}) catch unreachable).close();
     }
 
-    while (true) {
-        // TODO: replace access call with rename with RENAME_NOREPLACE flag
-        std.fs.cwd().access(name, .{}) catch |e| switch (e) {
-            error.FileNotFound => {
-                try std.fs.cwd().rename(tmp_name, name);
-                break;
-            },
-            else => return e,
-        };
-        timestamp += 1;
-        //log_event.info("moving log to next timestamp '{}' to resolve timestamp collision", .{timestamp});
-        const new_name_len = makeNamePath(&name_buf, out_dir_path, timestamp);
-        std.debug.assert(name.len == new_name_len);
-    }
+    try std.fs.cwd().rename(tmp_name, name);
 }
 
-fn cleanPartialFiles(out_dir_path: []const u8) !void {
+fn dirIsEmpty(path: []const u8) !bool {
+    var dir = try std.fs.cwd().openDir(path, .{.iterate=true});
+    defer dir.close();
+    var it = dir.iterate();
+    return if (try it.next()) |_| false else true;
+}
+
+fn cleanPartialFilesAndFindNextMsgNum(out_dir_path: []const u8) !u32 {
+    var next_msg_num: u32 = 0;
     var clean_count: usize = 0;
     var dir = try std.fs.cwd().openDir(out_dir_path, .{.iterate=true});
     defer dir.close();
@@ -290,7 +293,16 @@ fn cleanPartialFiles(out_dir_path: []const u8) !void {
             std.log.info("removing '{s}/{s}'", .{out_dir_path, entry.name});
             try dir.deleteFile(entry.name);
             clean_count += 1;
+        } else {
+            const num = std.fmt.parseInt(u32, entry.name, 10) catch |e| {
+                std.log.err("filename '{s}' is not a valid u32", .{entry.name});
+                return error.InvalidFilenameInOutDir;
+            };
+            if (num >= next_msg_num) {
+                next_msg_num = num + 1;
+            }
         }
     }
     std.log.info("removed {} '.partial' files from '{s}' directory", .{clean_count, out_dir_path});
+    return next_msg_num;
 }
