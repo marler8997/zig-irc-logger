@@ -46,7 +46,8 @@ pub fn go() !void {
     const login = null;
     //const channel = "zig";
     const channel = "zigtest";
-    const out_dir_path = "logs";
+
+    const out_dir_path = channel ++ "-logs";
 
     // first clean the partial files in out_dir in case there were any leftover from a previous run
     try cleanPartialFiles(out_dir_path);
