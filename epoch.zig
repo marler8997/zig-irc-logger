@@ -29,7 +29,7 @@ pub fn getDaysInYear(year: Year) u9 {
 
 pub const YearLeapKind = enum(u1) {not_leap, leap};
 
-const Month = enum(u4) {
+pub const Month = enum(u4) {
     jan, feb, mar, apr, may, jun,
     jul, aug, sep, oct, nov, dec,
 

@@ -271,6 +271,56 @@ fn formatRepoLogFilename(buf: []u8, year_day: epoch.YearAndDay, month_day: epoch
         year_day.year, month_day.month.numeric(), month_day.day_index+1}) catch unreachable).len;
 }
 
+const RepoDate = struct {
+    year: epoch.Year,
+    month: epoch.Month,
+    day_index: u5,
+};
+
+fn decodeFilenameDate(filename: []const u8) error{InvalidRepoDateFilename}!RepoDate {
+    if (!std.mem.endsWith(u8, filename, ".txt")) {
+        std.log.err("filename '{s}' does not end with '.txt'", .{filename});
+        return error.InvalidRepoDateFilename;
+    }
+    const date_str = filename[0..filename.len - ".txt".len];
+    if (date_str.len < 7) {
+        std.log.err("filename '{s}' is not long enough", .{filename});
+        return error.InvalidRepoDateFilename;
+    }
+    if (date_str[date_str.len - 3] != '-') {
+        std.log.err("filename '{s}' is missing '-' to separate month/day", .{filename});
+        return error.InvalidRepoDateFilename;
+    }
+    if (date_str[date_str.len - 6] != '/') {
+        std.log.err("filename '{s}' is missing '/' to separate year/month", .{filename});
+        return error.InvalidRepoDateFilename;
+    }
+    const month_num = std.fmt.parseInt(u4, date_str[date_str.len-5..date_str.len-3], 10) catch |e| {
+        std.log.err("filename '{s}' contains invalid month: {}", .{filename, e});
+        return error.InvalidRepoDateFilename;
+    };
+    if (month_num < 1 or month_num > 12) {
+        std.log.err("filename '{s}' contains month {} out of range", .{filename, month_num});
+        return error.InvalidRepoDateFilename;
+    }
+    const day_num = std.fmt.parseInt(u5, date_str[date_str.len-2..date_str.len], 10) catch |e| {
+        std.log.err("filename '{s}' contains invalid day: {}", .{filename, e});
+        return error.InvalidRepoDateFilename;
+    };
+    if (day_num < 1 or day_num > 31) {
+        std.log.err("filename '{s}' contains day {} out of range", .{filename, day_num});
+        return error.InvalidRepoDateFilename;
+    }
+    return RepoDate {
+        .year = std.fmt.parseInt(epoch.Year, date_str[0..date_str.len-6], 10) catch |e| {
+            std.log.err("filename '{s}' contains invalid year: {}", .{filename, e});
+            return error.InvalidRepoDateFilename;
+        },
+        .month = @intToEnum(epoch.Month, month_num-1),
+        .day_index = day_num - 1,
+    };
+}
+
 fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir) !void {
     const text = try file.readToEndAlloc(std.heap.page_allocator, 8192);
     defer std.heap.page_allocator.free(text);
@@ -318,6 +368,8 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
 
     // TODO: write a test for this!!!!!!!!
     if (!std.mem.eql(u8, repo_filename, now_link)) {
+        const now = try decodeFilenameDate(now_link);
+
         // TODO: I need to check if we are in the future or the past
         //       if past, maybe just put it in the latest log anyway
         //       if future, need to update "now" and create a new log

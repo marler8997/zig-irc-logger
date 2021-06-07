@@ -12,8 +12,12 @@ mkdir scratch/logger-out
 mkdir scratch/zig-irc-logs
 git -C scratch/zig-irc-logs init
 
-zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.out &
-publisher_pid=$!
+
+
+
+
+
+
 
 function addMsg() {
     num=$1
@@ -39,6 +43,41 @@ function waitUntil() {
         sleep 0.1
     done
 }
+
+function testBadFilename() {
+    bad_filename=$1
+    expected_error=$2
+    #rm scratch/publisher.badfilename.out
+    ln -s "$bad_filename" scratch/zig-irc-logs/now
+    zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.badfilename.out &
+    addMsg 0 1622782862 somebody "hello there"
+    waitUntil grep InvalidRepoDateFilename scratch/publisher.badfilename.out
+    if not grep "$expected_error" scratch/publisher.badfilename.out; then
+        echo "Error: missing expected output: $expected_error, got the following errors"
+        echo -----
+        grep "$error:" scratch/publisher.badfilename.out
+        echo -----
+        exit 1
+    fi
+    rm scratch/publisher.badfilename.out
+    unlink scratch/zig-irc-logs/now
+}
+
+testBadFilename a "filename 'a' does not end with '.txt'"
+testBadFilename .txt "filename '.txt' is not long enough"
+testBadFilename /01-01.txt "filename '/01-01.txt' is not long enough"
+testBadFilename 1/01/01.txt "filename '1/01/01.txt' is missing '-' to separate month/day"
+testBadFilename 1-01-01.txt "error: filename '1-01-01.txt' is missing '/' to separate year/month"
+testBadFilename a/01-01.txt "filename 'a/01-01.txt' contains invalid year"
+testBadFilename 1/00-01.txt "filename '1/00-01.txt' contains month 0 out of range"
+testBadFilename 1/13-01.txt "filename '1/13-01.txt' contains month 13 out of range"
+testBadFilename 1/01-aa.txt "filename '1/01-aa.txt' contains invalid day"
+testBadFilename 1/01-00.txt "filename '1/01-00.txt' contains day 0 out of range"
+testBadFilename 1/01-32.txt "filename '1/01-32.txt' contains invalid day"
+
+
+zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.out &
+publisher_pid=$!
 
 addMsg 0 1622782862 somebody "hello there"
 waitWhile test -e scratch/logger-out/0
