@@ -316,7 +316,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         const tomorrow_filename = tomorrow_filename_buf[0..formatRepoLogFilename(&tomorrow_filename_buf,
             tomorrow_year_day, tomorrow_year_day.calculateMonthDay())];
         if (!std.mem.eql(u8, tomorrow_filename, now_link)) {
-            std.log.err("got a timestamp '{s}' that is older than a day, repo's now link is '{s}'", .{repo_filename, now_link});
+            std.log.err("got a timestamp '{s}' that is more than a day old from \"now\": '{s}'", .{repo_filename, now_link});
             // TODO: do something to tell publisher not to start until this timestamp issue is fixed
             return error.TimestampsMessedUp;
         }

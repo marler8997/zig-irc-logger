@@ -12,7 +12,8 @@ mkdir scratch/logger-out
 mkdir scratch/zig-irc-logs
 git -C scratch/zig-irc-logs init
 
-zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs&
+zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.out &
+publisher_pid=$!
 
 function addMsg() {
     num=$1
@@ -25,15 +26,37 @@ function addMsg() {
     mv scratch/logger-out/${num}.partial scratch/logger-out/${num}
 }
 
-addMsg 0 1622992862 somebody "hello there"
+function waitWhile() {
+    while "$@"; do
+        sleep 0.1
+    done
+}
+function waitUntil() {
+    while true; do
+        if "$@"; then
+            break
+        fi
+        sleep 0.1
+    done
+}
 
+addMsg 0 1622782862 somebody "hello there"
+waitWhile test -e scratch/logger-out/0
+test -e scratch/zig-irc-logs/2021/06-04.txt
 
-# TODO: wait for publisher to publish the file
-sleep 3
+# test a very old message
+addMsg 0 1522992862 anotherbody "hi, how are you?"
+waitUntil grep TimestampsMessedUp scratch/publisher.out
 
-# TODO: test what happens when we create really new file, like 999999/01-01.txt
+# start publisher again because it should have crashed
+zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher2.out &
+publisher_pid=$!
 
+rm -rf scratch/zig-irc-logs/2021
+addMsg 0 1622782862 somebody "hello?"
+waitWhile test -e scratch/logger-out/0
+addMsg 1 1622782862 somebody "is anyone there?"
+waitWhile test -e scratch/logger-out/1
 
-
-
+echo --------------------------------------------------------------------------------
 echo Success
