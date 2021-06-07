@@ -10,8 +10,10 @@ mkdir scratch
 
 mkdir scratch/logger-out
 mkdir scratch/zig-irc-logs
+mkdir scratch/zig-irc-logs-origin
 git -C scratch/zig-irc-logs init
-
+git -C scratch/zig-irc-logs-origin init
+git -C scratch/zig-irc-logs remote add origin $(readlink -f scratch/zig-irc-logs-origin)
 
 
 
@@ -51,7 +53,7 @@ function testBadFilename() {
     ln -s "$bad_filename" scratch/zig-irc-logs/now
     zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.badfilename.out &
     addMsg 0 1622782862 somebody "hello there"
-    waitUntil grep InvalidRepoDateFilename scratch/publisher.badfilename.out
+    waitUntil grep -q InvalidRepoDateFilename scratch/publisher.badfilename.out
     if not grep "$expected_error" scratch/publisher.badfilename.out; then
         echo "Error: missing expected output: $expected_error, got the following errors"
         echo -----
@@ -75,7 +77,6 @@ testBadFilename 1/01-aa.txt "filename '1/01-aa.txt' contains invalid day"
 testBadFilename 1/01-00.txt "filename '1/01-00.txt' contains day 0 out of range"
 testBadFilename 1/01-32.txt "filename '1/01-32.txt' contains invalid day"
 
-
 zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.out &
 publisher_pid=$!
 
@@ -85,7 +86,13 @@ test -e scratch/zig-irc-logs/2021/06-04.txt
 
 # test a very old message
 addMsg 0 1522992862 anotherbody "hi, how are you?"
-waitUntil grep TimestampsMessedUp scratch/publisher.out
+# note: this is ok now, I just put the message in the current day even though
+#       the timestamp is clearly messed up
+#       zig-irc-logger prioritizes receive order over timestamp
+#waitUntil grep TimestampsMessedUp scratch/publisher.out
+
+addMsg 0 2522992862 anotherbody "hi, how are you?"
+waitUntil grep MakeNewLogNotImplemented scratch/publisher.out
 
 # start publisher again because it should have crashed
 zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher2.out &

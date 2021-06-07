@@ -346,6 +346,14 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         formatRepoLogFilename(&repo_filename_buf, year_day, month_day)];
     std.log.info("[DEBUG] {} > {s}", .{timestamp, repo_filename});
 
+    // double check our filename is valid
+    {
+        const roundtrip = try decodeFilenameDate(repo_filename);
+        std.debug.assert(year_day.year == roundtrip.year);
+        std.debug.assert(month_day.month == roundtrip.month);
+        std.debug.assert(month_day.day_index == roundtrip.day_index);
+    }
+
     // TODO: check if we are behind by a day, if we are, then add the new messages to the newest day.
     //       also check if we are behind by 2 days, if so, then report an error and quit.
     //       I think maintaining message order is more important than if the timestamps appear to
@@ -364,16 +372,24 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         };
     };
 
-    var tomorrow_filename_buf: [repo_log_file_buf_len]u8 = undefined;
-
     // TODO: write a test for this!!!!!!!!
     if (!std.mem.eql(u8, repo_filename, now_link)) {
         const now = try decodeFilenameDate(now_link);
 
-        // TODO: I need to check if we are in the future or the past
-        //       if past, maybe just put it in the latest log anyway
-        //       if future, need to update "now" and create a new log
-        return error.NotImpl;
+        const future = blk: {
+            if (year_day.year != now.year)
+                break :blk year_day.year > now.year;
+            if (month_day.month != now.month)
+                break :blk @enumToInt(month_day.month) > @enumToInt(now.month);
+            std.debug.assert(month_day.day_index != now.day_index);
+            break :blk month_day.day_index > now.day_index;
+        };
+        if (!future) {
+            // put it in today's log anyway
+            repo_filename = now_link;
+        } else {
+            return error.MakeNewLogNotImplemented;
+        }
 
 
 //        // If we are off by more than a day, then we might have a serious issue, quit

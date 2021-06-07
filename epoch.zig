@@ -90,7 +90,7 @@ pub const EpochDay = struct {
             year_day -= year_size;
             year += 1;
         }
-        return .{ .year = year, .day = @intCast(u8, year_day) };
+        return .{ .year = year, .day = @intCast(u9, year_day) };
     }
 };
 
