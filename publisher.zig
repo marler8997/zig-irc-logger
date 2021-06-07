@@ -228,37 +228,42 @@ fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !void {
     }
 }
 
-fn pushRepoChange(log_repo_path: []const u8) !void {
+fn run(cwd: []const u8, argv: []const []const u8) !void {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
     const arena = &arena_store.allocator;
 
-    std.log.info("[DEBUG] TODO: git commit/push\n", .{});
-    // TODO: get files that have changed
-    //       verify they are the files that we expect
-    //
-    const result = try std.ChildProcess.exec(.{
-        .allocator = arena,
-        .argv = &[_][]const u8 {
-            "git",
-            "status"
-        },
-        .cwd = log_repo_path,
-        .env_map = null,
-    });
-    std.log.info("STDOUT: '{s}'\nSTDERR: '{s}'\n", .{result.stdout, result.stderr});
+    {
+        const cmd = try std.mem.join(arena, " ", argv);
+        std.log.info("RUN(cwd={s}): {s}", .{cwd, cmd});
+    }
+
+    const result = try std.ChildProcess.exec(.{.allocator = arena, .argv = argv, .cwd = cwd});
+    if (result.stdout.len > 0) {
+        std.log.info("STDOUT: '{s}'", .{result.stdout});
+    }
+    if (result.stderr.len > 0) {
+        std.log.info("STDERR: '{s}'", .{result.stderr});
+    }
     switch (result.term) {
         .Exited => |code| {
             if (code != 0) {
-                std.log.err("git process exited with code {}", .{code});
-                return error.GitError;
+                std.log.err("child process exited with code {}", .{code});
+                return error.ChildProcessFailed;
             }
         },
         else => {
-            std.log.err("git process failed with {}", .{result.term});
-            return error.GitError;
+            std.log.err("child process failed with {}", .{result.term});
+            return error.ChildProcessFailed;
         },
     }
+}
+
+fn pushRepoChange(log_repo_path: []const u8) !void {
+    //try run(log_repo_path, &[_][]const u8 {"git", "status"});
+    try run(log_repo_path, &[_][]const u8 {"git", "add", "."});
+    try run(log_repo_path, &[_][]const u8 {"git", "commit", "-m", "live update"});
+    try run(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:live", "-f"});
 }
 
 fn formatRepoLogFilename(buf: []u8, year_day: epoch.YearAndDay, month_day: epoch.MonthAndDay) usize {
@@ -295,6 +300,9 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
     //       also check if we are behind by 2 days, if so, then report an error and quit.
     //       I think maintaining message order is more important than if the timestamps appear to
     //       be out of order as a result of daylight savings or a system clock update or something.
+    // NOTE: maybe I should just ignore this error?  just put whatever timestamp I get into the current
+    //       day.  If I see a timestamp for a new day, create a new log for that day and start puttting everything
+    //       into there.
     var now_link_buf: [repo_log_file_buf_len]u8 = undefined;
     var now_link = blk: {
         break :blk log_repo_dir.readLink("now", &now_link_buf) catch |e| switch (e) {
@@ -310,20 +318,26 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
 
     // TODO: write a test for this!!!!!!!!
     if (!std.mem.eql(u8, repo_filename, now_link)) {
-        // If we are off by more than a day, then we might have a serious issue, quit
-        const tomorrow = epoch.EpochDay { .day = epoch_day.day + 1 };
-        const tomorrow_year_day = tomorrow.calculateYearDay();
-        const tomorrow_filename = tomorrow_filename_buf[0..formatRepoLogFilename(&tomorrow_filename_buf,
-            tomorrow_year_day, tomorrow_year_day.calculateMonthDay())];
-        if (!std.mem.eql(u8, tomorrow_filename, now_link)) {
-            std.log.err("got a timestamp '{s}' that is more than a day old from \"now\": '{s}'", .{repo_filename, now_link});
-            // TODO: do something to tell publisher not to start until this timestamp issue is fixed
-            return error.TimestampsMessedUp;
-        }
-        // update now link
-        return error.ImplementUpdateNowLink;
+        // TODO: I need to check if we are in the future or the past
+        //       if past, maybe just put it in the latest log anyway
+        //       if future, need to update "now" and create a new log
+        return error.NotImpl;
 
-        //repo_filename = tomorrow_filename;
+
+//        // If we are off by more than a day, then we might have a serious issue, quit
+//        const tomorrow = epoch.EpochDay { .day = epoch_day.day + 1 };
+//        const tomorrow_year_day = tomorrow.calculateYearDay();
+//        const tomorrow_filename = tomorrow_filename_buf[0..formatRepoLogFilename(&tomorrow_filename_buf,
+//            tomorrow_year_day, tomorrow_year_day.calculateMonthDay())];
+//        if (!std.mem.eql(u8, tomorrow_filename, now_link)) {
+//            std.log.err("got a timestamp '{s}' that is more than a day old from \"now\": '{s}'", .{repo_filename, now_link});
+//            // TODO: do something to tell publisher not to start until this timestamp issue is fixed
+//            return error.TimestampsMessedUp;
+//        }
+//        // update now link
+//        return error.ImplementUpdateNowLink;
+//
+//        //repo_filename = tomorrow_filename;
     }
 
     {
