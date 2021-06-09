@@ -322,7 +322,7 @@ fn decodeFilenameDate(filename: []const u8) error{InvalidRepoDateFilename}!RepoD
             std.log.err("filename '{s}' contains invalid year: {}", .{filename, e});
             return error.InvalidRepoDateFilename;
         },
-        .month = @intToEnum(epoch.Month, month_num-1),
+        .month = @intToEnum(epoch.Month, month_num),
         .day_index = day_num - 1,
     };
 }
