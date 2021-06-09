@@ -94,7 +94,9 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
         else => return e,
     };
 
-    try publishFiles(logger_dir, log_repo_dir);
+    if (.published == try publishFiles(logger_dir, log_repo_dir)) {
+        try pushRepoChange(log_repo_path);
+    }
 
     const inotify_fd = try os.inotify_init1(0); // linux.IN_CLOEXEC??
     const watch_fd = os.inotify_add_watch(inotify_fd, logger_dir, linux.IN_MOVED_TO) catch |e| switch(e) {
@@ -136,8 +138,11 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
             }
             const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
             //handleNewFile(log_repo, name);
-            try publishFiles(logger_dir, log_repo_dir);
-            try pushRepoChange(log_repo_path);
+            if (.none == try publishFiles(logger_dir, log_repo_dir)) {
+                std.log.warn("publishFiles did not publish anything?", .{});
+            } else {
+                try pushRepoChange(log_repo_path);
+            }
             offset += event_size;
             if (offset == read_result)
                 break;
@@ -163,7 +168,7 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
 //    std.log.info("TODO: handle new message '{}'", .{timestamp});
 //}
 
-fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !void {
+fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !enum { none, published } {
     // TODO: maybe handle some of the openDir errors?
     var dir = try std.fs.cwd().openDir(logger_dir, .{.iterate=true});
     defer dir.close();
@@ -198,7 +203,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !void {
             break :blk r;
         }
         std.log.info("[DEBUG] there are no files to publish", .{});
-        return;
+        return .none;
     };
 
     {
@@ -226,6 +231,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !void {
                 break;
         }
     }
+    return .published;
 }
 
 fn run(cwd: []const u8, argv: []const []const u8) !void {
