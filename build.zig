@@ -61,7 +61,7 @@ fn addWebServer(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     const apple_pie_index = try (GitRepo {
         .url = "https://github.com/luukdegram/apple_pie",
         .branch = null,
-        .sha = "4d03dbde35ade01eaba05963238c5afa408aa057",
+        .sha = "fee2a1af649791f720f885a34d766ca831bf2015",
     }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "apple_pie.zig");
     const exe = b.addExecutable("serve", "serve.zig");
     exe.setTarget(target);
