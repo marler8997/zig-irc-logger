@@ -93,8 +93,12 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
         },
         else => return e,
     };
+    //if (!try isRepoClean(log_repo_path)) {
+    //    std.log.err("repo '{s}' is not clean, quitting", .{log_repo_path});
+    //    return 1;
+    //}
 
-    if (.published == try publishFiles(logger_dir, log_repo_dir)) {
+    if (.published == try publishFiles(logger_dir, log_repo_path, log_repo_dir)) {
         try pushRepoChange(log_repo_path);
     }
 
@@ -138,7 +142,7 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
             }
             const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
             //handleNewFile(log_repo, name);
-            if (.none == try publishFiles(logger_dir, log_repo_dir)) {
+            if (.none == try publishFiles(logger_dir, log_repo_path, log_repo_dir)) {
                 std.log.warn("publishFiles did not publish anything?", .{});
             } else {
                 try pushRepoChange(log_repo_path);
@@ -168,7 +172,57 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
 //    std.log.info("TODO: handle new message '{}'", .{timestamp});
 //}
 
-fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !enum { none, published } {
+// 1. check if git repo is clean
+//    if it isn't print an error and exit
+//
+
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// TODO: test the case when there are no changes!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !enum{have_changes, no_changes} {
+    var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_store.deinit();
+    const arena = &arena_store.allocator;
+
+    const result = try runCaptureOuts(arena, repo, &[_][]const u8 {"git", "status", "--porcelain"});
+    try passOrDumpAndThrow(result);
+    std.debug.assert(result.stderr.len == 0);
+    std.debug.print("GIT STATUS: '{s}'\n", .{result.stdout});
+
+    var it = std.mem.split(result.stdout, "\n");
+    const line = blk: {
+        if (it.next()) |l| {
+            if (l.len > 0) break :blk l;
+        }
+        return .no_changes;
+    };
+
+    const codes = line[0..2];
+    std.debug.assert(line[2] == ' ');
+    const filename = line[3..];
+    std.debug.print("codes '{s}' filename '{s}'\n", .{codes, filename});
+    if (!std.mem.eql(u8, filename, log_file_to_commit)) {
+        std.log.err("expected git status to show file '{s}' but got '{s}'", .{log_file_to_commit, filename});
+        return error.UnexpectedRepoState;
+    }
+
+    const next_line: ?[]const u8 = blk: {
+        if (it.next()) |l| {
+            if (l.len > 0) break :blk l;
+        }
+        break :blk null;
+    };
+    if (next_line) |l| {
+        std.log.err("expected only 1 git change but got '{s}'", .{l});
+        return error.UnexpectedRepoState;
+    }
+    return .have_changes;
+}
+
+fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir: std.fs.Dir) !enum { none, published } {
     // TODO: maybe handle some of the openDir errors?
     var dir = try std.fs.cwd().openDir(logger_dir, .{.iterate=true});
     defer dir.close();
@@ -223,7 +277,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !enum { none, 
                     else => return e,
                 };
                 defer file.close();
-                try publishFile(name, file, log_repo_dir);
+                try publishFile(name, file, log_repo_path, log_repo_dir);
             }
             try dir.deleteFile(name);
 
@@ -234,42 +288,63 @@ fn publishFiles(logger_dir: []const u8, log_repo_dir: std.fs.Dir) !enum { none, 
     return .published;
 }
 
-fn run(cwd: []const u8, argv: []const []const u8) !void {
+fn runNoCapture(cwd: []const u8, argv: []const []const u8) !void {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
-    const arena = &arena_store.allocator;
-
-    {
-        const cmd = try std.mem.join(arena, " ", argv);
-        std.log.info("RUN(cwd={s}): {s}", .{cwd, cmd});
-    }
-
-    const result = try std.ChildProcess.exec(.{.allocator = arena, .argv = argv, .cwd = cwd});
+    const result = try runCaptureOuts(&arena_store.allocator, cwd, argv);
     if (result.stdout.len > 0) {
         std.log.info("STDOUT: '{s}'", .{result.stdout});
     }
     if (result.stderr.len > 0) {
         std.log.info("STDERR: '{s}'", .{result.stderr});
     }
-    switch (result.term) {
-        .Exited => |code| {
-            if (code != 0) {
-                std.log.err("child process exited with code {}", .{code});
-                return error.ChildProcessFailed;
-            }
-        },
-        else => {
-            std.log.err("child process failed with {}", .{result.term});
-            return error.ChildProcessFailed;
-        },
+    try passOrThrow(result.term);
+}
+
+fn execResultPassed(term: std.ChildProcess.Term) bool {
+    switch (term) {
+        .Exited => |code| return code == 0,
+        else => return false,
     }
 }
 
+
+fn passOrThrow(term: std.ChildProcess.Term) error{ChildProcessFailed}!void {
+    if (!execResultPassed(term)) {
+        std.log.err("child process failed with {}", .{term});
+        return error.ChildProcessFailed;
+    }
+}
+fn passOrDumpAndThrow(result: std.ChildProcess.ExecResult) error{ChildProcessFailed}!void {
+    if (!execResultPassed(result.term)) {
+        if (result.stdout.len > 0) {
+            std.log.info("STDOUT: '{s}'", .{result.stdout});
+        }
+        if (result.stderr.len > 0) {
+            std.log.info("STDERR: '{s}'", .{result.stderr});
+        }
+        std.log.err("child process failed with {}", .{result.term});
+        return error.ChildProcessFailed;
+    }
+}
+
+fn runCaptureOuts(allocator: *std.mem.Allocator, cwd: []const u8, argv: []const []const u8) !std.ChildProcess.ExecResult {
+    {
+        const cmd = try std.mem.join(allocator, " ", argv);
+        defer allocator.free(cmd);
+        std.log.info("RUN(cwd={s}): {s}", .{cwd, cmd});
+    }
+
+    return try std.ChildProcess.exec(.{.allocator = allocator, .argv = argv, .cwd = cwd});
+}
+
+const live_update_msg = "live update";
+
 fn pushRepoChange(log_repo_path: []const u8) !void {
     //try run(log_repo_path, &[_][]const u8 {"git", "status"});
-    try run(log_repo_path, &[_][]const u8 {"git", "add", "."});
-    try run(log_repo_path, &[_][]const u8 {"git", "commit", "-m", "live update"});
-    try run(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:live", "-f"});
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "add", "."});
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "commit", "-m", live_update_msg});
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:live", "-f"});
 }
 
 fn formatRepoLogFilename(buf: []u8, year_day: epoch.YearAndDay, month_day: epoch.MonthAndDay) usize {
@@ -327,7 +402,7 @@ fn decodeFilenameDate(filename: []const u8) error{InvalidRepoDateFilename}!RepoD
     };
 }
 
-fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir) !void {
+fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u8, log_repo_dir: std.fs.Dir) !void {
     const text = try file.readToEndAlloc(std.heap.page_allocator, 8192);
     defer std.heap.page_allocator.free(text);
 
@@ -360,13 +435,6 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         std.debug.assert(month_day.day_index == roundtrip.day_index);
     }
 
-    // TODO: check if we are behind by a day, if we are, then add the new messages to the newest day.
-    //       also check if we are behind by 2 days, if so, then report an error and quit.
-    //       I think maintaining message order is more important than if the timestamps appear to
-    //       be out of order as a result of daylight savings or a system clock update or something.
-    // NOTE: maybe I should just ignore this error?  just put whatever timestamp I get into the current
-    //       day.  If I see a timestamp for a new day, create a new log for that day and start puttting everything
-    //       into there.
     var now_link_buf: [repo_log_file_buf_len]u8 = undefined;
     var now_link = blk: {
         break :blk log_repo_dir.readLink("now", &now_link_buf) catch |e| switch (e) {
@@ -378,7 +446,6 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         };
     };
 
-    // TODO: write a test for this!!!!!!!!
     if (!std.mem.eql(u8, repo_filename, now_link)) {
         const now = try decodeFilenameDate(now_link);
 
@@ -391,27 +458,11 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
             break :blk month_day.day_index > now.day_index;
         };
         if (!future) {
-            // put it in today's log anyway
+            std.log.info("got a timestamp from a previous day '{s}' but putting it in today's log '{s}'", .{repo_filename, now_link});
             repo_filename = now_link;
         } else {
-            return error.MakeNewLogNotImplemented;
+            try newLog(log_repo_path, log_repo_dir, now_link, repo_filename);
         }
-
-
-//        // If we are off by more than a day, then we might have a serious issue, quit
-//        const tomorrow = epoch.EpochDay { .day = epoch_day.day + 1 };
-//        const tomorrow_year_day = tomorrow.calculateYearDay();
-//        const tomorrow_filename = tomorrow_filename_buf[0..formatRepoLogFilename(&tomorrow_filename_buf,
-//            tomorrow_year_day, tomorrow_year_day.calculateMonthDay())];
-//        if (!std.mem.eql(u8, tomorrow_filename, now_link)) {
-//            std.log.err("got a timestamp '{s}' that is more than a day old from \"now\": '{s}'", .{repo_filename, now_link});
-//            // TODO: do something to tell publisher not to start until this timestamp issue is fixed
-//            return error.TimestampsMessedUp;
-//        }
-//        // update now link
-//        return error.ImplementUpdateNowLink;
-//
-//        //repo_filename = tomorrow_filename;
     }
 
     {
@@ -432,4 +483,52 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_dir: std.fs.Dir
         try log_file.seekFromEnd(0);
         try log_file.writer().print("{s}\n\n", .{text});
     }
+}
+
+fn getSha(allocator: *std.mem.Allocator, repo_path: []const u8, refspec: []const u8) ![]const u8 {
+    const result = try runCaptureOuts(allocator, repo_path, &[_][]const u8 {"git", "rev-parse", refspec});
+    try passOrDumpAndThrow(result);
+    std.debug.assert(result.stderr.len == 0);
+    const hash = std.mem.trimRight(u8, result.stdout, "\r\n");
+    std.debug.assert(hash.len == 40);
+    return hash;
+}
+
+fn newLog(log_repo_path: []const u8, log_repo_dir: std.fs.Dir, now_link: []const u8, next_log: []const u8) !void {
+    var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_store.deinit();
+    const arena = &arena_store.allocator;
+
+    const head = try getSha(arena, log_repo_path, "HEAD");
+    std.log.info("HEAD is at '{s}'", .{head});
+
+    var base = head;
+    var parent_hash_buf: [41]u8 = undefined;
+
+    while (true) {
+        const command = [_][]const u8 {"git", "show", "-s", "--format=%B", base};
+        const result = try runCaptureOuts(arena, log_repo_path, &command);
+        try passOrDumpAndThrow(result);
+        std.debug.assert(result.stderr.len == 0);
+        if (!std.mem.startsWith(u8, result.stdout, live_update_msg)) {
+            break;
+        }
+        std.mem.copy(u8, &parent_hash_buf, base);
+        parent_hash_buf[40] = '^';
+        base = try getSha(arena, log_repo_path, &parent_hash_buf);
+        std.log.info("next sha is '{s}'", .{base});
+    }
+    std.log.info("base is '{s}'", .{base});
+
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "reset", "--soft", base});
+
+    std.log.info("deleting now link...", .{});
+    try log_repo_dir.deleteFile("now");
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "rm", "now"});
+
+    // this verifies that the only modified file is the one that 'now' was pointing to
+    const change_state = try checkRepo(log_repo_path, now_link);
+
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "commit", "-m", now_link});
+    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:master"});
 }

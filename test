@@ -12,9 +12,9 @@ mkdir scratch/logger-out
 mkdir scratch/zig-irc-logs
 mkdir scratch/zig-irc-logs-origin
 git -C scratch/zig-irc-logs init
-git -C scratch/zig-irc-logs-origin init
+git -C scratch/zig-irc-logs commit --allow-empty -m "initial commit"
+git -C scratch/zig-irc-logs-origin init --bare
 git -C scratch/zig-irc-logs remote add origin $(readlink -f scratch/zig-irc-logs-origin)
-
 
 
 
@@ -80,29 +80,60 @@ testBadFilename 1/01-32.txt "filename '1/01-32.txt' contains invalid day"
 zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher.out &
 publisher_pid=$!
 
-addMsg 0 1622782862 somebody "hello there"
+addMsg 0 1622782862 fred "hello there"
 waitWhile test -e scratch/logger-out/0
 test -e scratch/zig-irc-logs/2021/06-04.txt
 
+addMsg 0 1622782866 george "hi, how are you?"
+waitWhile test -e scratch/logger-out/1
+test -e scratch/zig-irc-logs/2021/06-04.txt
+
+addMsg 0 1622782866 fred "I asked you first"
+waitWhile test -e scratch/logger-out/2
+test -e scratch/zig-irc-logs/2021/06-04.txt
+
+# the order in which we receive messages is more important than the timestamp
+# so if the timestamp is from the past, just shove it in the log anyway
+# the client can deal with how to interpret the timestamps
+addMsg 0 10 fred "what's goin on here, I'm a time traveler from 1970"
+waitWhile test -e scratch/logger-out/3
+test -e scratch/zig-irc-logs/2021/06-04.txt
+
+waitUntil grep -q "time traveler" scratch/zig-irc-logs/2021/06-04.txt
+
 # test a very old message
-addMsg 0 1522992862 anotherbody "hi, how are you?"
+#addMsg 0 1522992862 anotherbody "hi, how are you?"
 # note: this is ok now, I just put the message in the current day even though
 #       the timestamp is clearly messed up
 #       zig-irc-logger prioritizes receive order over timestamp
 #waitUntil grep TimestampsMessedUp scratch/publisher.out
 
-addMsg 0 2522992862 anotherbody "hi, how are you?"
-waitUntil grep MakeNewLogNotImplemented scratch/publisher.out
+addMsg 0 2522992862 anotherbody "whoa, it's been a while"
+waitUntil test -e scratch/zig-irc-logs/2049/12-13.txt
+
+
+git clone scratch/zig-irc-logs-origin scratch/zig-irc-logs-cloned
+test -e scratch/zig-irc-logs-cloned/2021/06-04.txt
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# TODO: test case where there are no changes!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 
 # start publisher again because it should have crashed
-zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher2.out &
-publisher_pid=$!
+#zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher2.out &
+#publisher_pid=$!
 
-rm -rf scratch/zig-irc-logs/2021
-addMsg 0 1622782862 somebody "hello?"
-waitWhile test -e scratch/logger-out/0
-addMsg 1 1622782862 somebody "is anyone there?"
-waitWhile test -e scratch/logger-out/1
+#rm -rf scratch/zig-irc-logs/2021
+#addMsg 0 1622782862 somebody "hello?"
+#waitWhile test -e scratch/logger-out/0
+#addMsg 1 1622782862 somebody "is anyone there?"
+#waitWhile test -e scratch/logger-out/1
 
 echo --------------------------------------------------------------------------------
 echo Success
