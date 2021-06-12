@@ -172,17 +172,12 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
 //    std.log.info("TODO: handle new message '{}'", .{timestamp});
 //}
 
-// 1. check if git repo is clean
-//    if it isn't print an error and exit
-//
+const RepoState = struct {
+    have_log: bool,
+    now_link: enum {missing, untracked, tracked},
+};
 
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// TODO: test the case when there are no changes!
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !enum{have_changes, no_changes} {
+fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !RepoState {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
     const arena = &arena_store.allocator;
@@ -192,34 +187,33 @@ fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !enum{have_change
     std.debug.assert(result.stderr.len == 0);
     std.debug.print("GIT STATUS: '{s}'\n", .{result.stdout});
 
-    var it = std.mem.split(result.stdout, "\n");
-    const line = blk: {
-        if (it.next()) |l| {
-            if (l.len > 0) break :blk l;
+    var state = RepoState { .have_log = false, .now_link = .missing };
+    {
+        var it = std.mem.split(result.stdout, "\n");
+        while (it.next()) |line| {
+            if (line.len == 0)
+                continue;
+            const codes = line[0..2];
+            std.debug.assert(line[2] == ' ');
+            const filename = line[3..];
+            std.debug.print("codes '{s}' filename '{s}'\n", .{codes, filename});
+            if (std.mem.eql(u8, filename, "now")) {
+                std.debug.assert(state.now_link == .missing);
+                if (std.mem.eql(u8, codes, "??")) {
+                    state.now_link = .untracked;
+                } else {
+                    state.now_link = .tracked;
+                }
+            } else if (std.mem.eql(u8, filename, log_file_to_commit)) {
+                std.debug.assert(!state.have_log);
+                state.have_log = true;
+            } else {
+                std.log.err("unexpected file in git status '{s}'", .{filename});
+                return error.UnexpectedRepoState;
+            }
         }
-        return .no_changes;
-    };
-
-    const codes = line[0..2];
-    std.debug.assert(line[2] == ' ');
-    const filename = line[3..];
-    std.debug.print("codes '{s}' filename '{s}'\n", .{codes, filename});
-    if (!std.mem.eql(u8, filename, log_file_to_commit)) {
-        std.log.err("expected git status to show file '{s}' but got '{s}'", .{log_file_to_commit, filename});
-        return error.UnexpectedRepoState;
     }
-
-    const next_line: ?[]const u8 = blk: {
-        if (it.next()) |l| {
-            if (l.len > 0) break :blk l;
-        }
-        break :blk null;
-    };
-    if (next_line) |l| {
-        std.log.err("expected only 1 git change but got '{s}'", .{l});
-        return error.UnexpectedRepoState;
-    }
-    return .have_changes;
+    return state;
 }
 
 fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir: std.fs.Dir) !enum { none, published } {
@@ -280,6 +274,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
                 defer file.close();
                 try publishFile(name, file, log_repo_path, log_repo_dir);
             }
+            std.log.info("rm '{s}'", .{name});
             try dir.deleteFile(name);
 
             if (i == min_max.max)
@@ -440,6 +435,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u
     var now_link = blk: {
         break :blk log_repo_dir.readLink("now", &now_link_buf) catch |e| switch (e) {
             error.FileNotFound => {
+                std.log.info("ln -s {s} {s}/now", .{repo_filename, log_repo_path});
                 try log_repo_dir.symLink(repo_filename, "now", .{});
                 break :blk try log_repo_dir.readLink("now", &now_link_buf);
             },
@@ -526,17 +522,22 @@ fn newLog(log_repo_path: []const u8, log_repo_dir: std.fs.Dir, now_link: []const
 
     try runNoCapture(log_repo_path, &[_][]const u8 {"git", "reset", "--soft", base});
 
-    std.log.info("deleting now link...", .{});
-    try log_repo_dir.deleteFile("now");
-    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "rm", "now"});
-
     // this verifies that the only modified file is the one that 'now' was pointing to
-    const change_state = try checkRepo(log_repo_path, now_link);
-    if (change_state == .no_changes) {
+    const repo_state = try checkRepo(log_repo_path, now_link);
+    if (repo_state.now_link == .tracked) {
+        try runNoCapture(log_repo_path, &[_][]const u8 {"git", "rm", "--cached", "now"});
+    }
+    if (repo_state.have_log) {
+        try runNoCapture(log_repo_path, &[_][]const u8 {"git", "add", now_link});
+        try runNoCapture(log_repo_path, &[_][]const u8 {"git", "commit", "-m", now_link});
+        try runNoCapture(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:master"});
+    } else {
         std.log.info("there are no changes to commit", .{});
-        return;
     }
 
-    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "commit", "-m", now_link});
-    try runNoCapture(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:master"});
+    // it's important NOT to remove 'now' until the old log file has been added to master
+    if (repo_state.now_link != .missing) {
+        std.log.info("deleting now link...", .{});
+        try log_repo_dir.deleteFile("now");
+    }
 }
