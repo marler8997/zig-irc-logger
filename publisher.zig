@@ -256,9 +256,10 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
         if (result) |r| {
             break :blk r;
         }
-        std.log.info("[DEBUG] there are no files to publish", .{});
+        std.log.info("[DEBUG] there are no messages to publish", .{});
         return .none;
     };
+    std.log.info("[DEBUG] publishing {} messages", .{min_max.max - min_max.min + 1});
 
     {
         var i: u32 = min_max.min;
@@ -462,6 +463,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u
             repo_filename = now_link;
         } else {
             try newLog(log_repo_path, log_repo_dir, now_link, repo_filename);
+            try log_repo_dir.symLink(repo_filename, "now", .{});
         }
     }
 
@@ -495,6 +497,8 @@ fn getSha(allocator: *std.mem.Allocator, repo_path: []const u8, refspec: []const
 }
 
 fn newLog(log_repo_path: []const u8, log_repo_dir: std.fs.Dir, now_link: []const u8, next_log: []const u8) !void {
+    std.log.info("NEW_LOG: '{s}' to '{s}'", .{now_link, next_log});
+
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
     const arena = &arena_store.allocator;
@@ -528,6 +532,10 @@ fn newLog(log_repo_path: []const u8, log_repo_dir: std.fs.Dir, now_link: []const
 
     // this verifies that the only modified file is the one that 'now' was pointing to
     const change_state = try checkRepo(log_repo_path, now_link);
+    if (change_state == .no_changes) {
+        std.log.info("there are no changes to commit", .{});
+        return;
+    }
 
     try runNoCapture(log_repo_path, &[_][]const u8 {"git", "commit", "-m", now_link});
     try runNoCapture(log_repo_path, &[_][]const u8 {"git", "push", "origin", "HEAD:master"});

@@ -115,15 +115,15 @@ waitUntil test -e scratch/zig-irc-logs/2049/12-13.txt
 git clone scratch/zig-irc-logs-origin scratch/zig-irc-logs-cloned
 test -e scratch/zig-irc-logs-cloned/2021/06-04.txt
 
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# TODO: test case where there are no changes!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# remove the new log file so we can test what would happen if the 'now' link
+# was created but we failed to write the log file
+git -C scratch/zig-irc-logs reset --soft HEAD^1
+git -C scratch/zig-irc-logs rm -f 2049/12-13.txt
 
+addMsg 0 2532992862 joe "yeah it has"
+waitUntil test -e scratch/zig-irc-logs/2050/04-08.txt
+
+sleep 1
 
 # start publisher again because it should have crashed
 #zig build run-publisher -- --logger-dir scratch/logger-out --repo scratch/zig-irc-logs &> scratch/publisher2.out &
