@@ -190,7 +190,7 @@ const ClientState = struct {
         };
     }
     fn targetsMe(self: ClientState, target: []const u8) bool {
-        return mem.eql(u8, target, "*") or mem.eql(u8, target, self.user);
+        return mem.eql(u8, target, "*") or mem.eql(u8, target, self.user) or mem.eql(u8, target, "$$*");
     }
     fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
         log_msg.info("{s}", .{msg});
