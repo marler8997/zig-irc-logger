@@ -22,9 +22,9 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
         }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "main.zig");
         exe.addPackage(.{
             .name = "ssl",
-            .path = "iguanassl.zig",
+            .path = .{ .path = "iguanassl.zig" },
             .dependencies = &[_]std.build.Pkg {
-                .{ .name = "iguana", .path = iguana_index_file },
+                .{ .name = "iguana", .path = .{ .path = iguana_index_file } },
             },
         });
     } else {
