@@ -7,6 +7,8 @@ pub const Stream = struct {
     net_stream: std.net.Stream,
 
     pub fn init(net_stream: std.net.Stream, serverName: []const u8, pinned: *Pinned) !Stream {
+        _ = serverName;
+        _ = pinned;
         return Stream { .net_stream = net_stream };
     }
 

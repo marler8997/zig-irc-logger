@@ -349,7 +349,7 @@ fn cleanPartialFilesAndFindNextMsgNum(out_dir_path: []const u8) !u32 {
             try dir.deleteFile(entry.name);
             clean_count += 1;
         } else {
-            const num = std.fmt.parseInt(u32, entry.name, 10) catch |e| {
+            const num = std.fmt.parseInt(u32, entry.name, 10) catch {
                 std.log.err("filename '{s}' is not a valid u32", .{entry.name});
                 return error.InvalidFilenameInOutDir;
             };

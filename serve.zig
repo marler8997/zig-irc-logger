@@ -18,8 +18,9 @@ pub fn main() !void {
 }
 
 fn index(response: *apple_pie.Response, request: apple_pie.Request) !void {
+    _ = request;
     const file = std.fs.cwd().openFile("logs/current", .{}) catch |openfile_error| {
-        response.writer().print("Error: failed to open current irc logfile: {}\n", .{openfile_error}) catch |write_error| {
+        response.writer().print("Error: failed to open current irc logfile: {}\n", .{openfile_error}) catch {
             // TODO: what to do with this write error?
         };
         return;
@@ -30,14 +31,14 @@ fn index(response: *apple_pie.Response, request: apple_pie.Request) !void {
     var buffer: [std.mem.page_size]u8 = undefined;
     while (true) {
         const len = file.read(&buffer) catch |read_file_error| {
-            response.writer().print("\n!!! ERROR while sending file contents: {}!!!\n", .{read_file_error}) catch |e| {
+            response.writer().print("\n!!! ERROR while sending file contents: {}!!!\n", .{read_file_error}) catch {
                 // TODO: what to do with this write error?
             };
             return;
         };
         if (len == 0)
             break;
-        response.writer().writeAll(buffer[0..len]) catch |e| {
+        response.writer().writeAll(buffer[0..len]) catch {
             // TODO: what to do with this write error?
             return;
         };

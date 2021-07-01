@@ -5,7 +5,7 @@ pub fn build(b: *std.build.Builder) !void {
     const mode = b.standardReleaseOptions();
     try addLogger(b, target, mode);
     try addPublisher(b, target, mode);
-    try addWebServer(b, target, mode);
+    //try addWebServer(b, target, mode);
 }
 
 fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
@@ -111,7 +111,7 @@ pub const GitRepo = struct {
         };
         errdefer allocator.free(path);
 
-        std.fs.accessAbsolute(path, std.fs.File.OpenFlags { .read = true }) catch |err| {
+        std.fs.accessAbsolute(path, std.fs.File.OpenFlags { .read = true }) catch {
             std.debug.print("Error: repository '{s}' does not exist\n", .{path});
             std.debug.print("       Run the following to clone it:\n", .{});
             const branch_args = if (self.branch) |b| &[2][]const u8 {" -b ", b} else &[2][]const u8 {"", ""};

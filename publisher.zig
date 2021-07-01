@@ -140,7 +140,7 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
                 std.log.err("expected event IN_MOVED_TO (0x{x}) but got 0x{x}", .{linux.IN_MOVED_TO, event.mask});
                 return error.WrongEventMask;
             }
-            const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
+            //const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
             //handleNewFile(log_repo, name);
             if (.none == try publishFiles(logger_dir, log_repo_path, log_repo_dir)) {
                 std.log.warn("publishFiles did not publish anything?", .{});
@@ -233,7 +233,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
                 continue;
             }
             const msg_num = std.fmt.parseInt(u32, entry.name, 10) catch |e| {
-                std.log.err("filename '{s}' is not a valid u32 integer", .{entry.name});
+                std.log.err("filename '{s}' is not a valid u32 integer: {}", .{entry.name, e});
                 // should we remove it? what should we do here? for now I'll just return an error
                 return error.FilenameIsNotAnInteger;
             };
@@ -408,7 +408,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u
     };
     const timestamp_string = text[0..newline_index];
     const timestamp = std.fmt.parseInt(u64, timestamp_string, 10) catch |e| {
-        std.log.err("file does not start with a valid timestamp, found '{s}'", .{timestamp_string});
+        std.log.err("file does not start with a valid timestamp, found '{s}': {}", .{timestamp_string, e});
         return error.FileHasInvalidTimestamp;
     };
 
