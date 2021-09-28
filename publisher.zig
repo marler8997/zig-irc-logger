@@ -12,7 +12,12 @@
 //!
 const std = @import("std");
 const os = std.os;
-const linux = os.linux;
+const linux = struct {
+    usingnamespace os.linux;
+
+    // constant is now missing from the std lib (see https://github.com/ziglang/zig/issues/9855)
+    pub const IN_MOVED_TO = 0x00000080;
+};
 const inotify_event = linux.inotify_event;
 
 const epoch = @import("epoch.zig");
@@ -189,7 +194,7 @@ fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !RepoState {
 
     var state = RepoState { .have_log = false, .now_link = .missing };
     {
-        var it = std.mem.split(result.stdout, "\n");
+        var it = std.mem.split(u8, result.stdout, "\n");
         while (it.next()) |line| {
             if (line.len == 0)
                 continue;

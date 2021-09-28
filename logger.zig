@@ -17,7 +17,11 @@
 //!
 const std = @import("std");
 const mem = std.mem;
-const os = std.os;
+const os = struct {
+    usingnamespace std.os;
+    // workaround https://github.com/ziglang/zig/issues/9856
+    pub const CLOCK_REALTIME = 0;
+};
 
 const ssl = @import("ssl");
 
