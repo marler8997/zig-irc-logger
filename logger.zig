@@ -31,6 +31,26 @@ const log_msg = std.log.scoped(.msg);
 const log_send = std.log.scoped(.send);
 const log_event = std.log.scoped(.event);
 
+pub fn log(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    {
+        const stderr = std.io.getStdErr().writer();
+        const timestamp = getTimestamp() catch |err| std.debug.panic("failed to get timestamp: {}", .{err});
+        const epoch_seconds = std.time.epoch.EpochSeconds { .secs = timestamp };
+        const day_seconds = epoch_seconds.getDaySeconds();
+        nosuspend stderr.print("{:0>2}:{:0>2}:{:0>2} ", .{
+            @divTrunc(day_seconds.secs, 3600),
+            @divTrunc(@mod(day_seconds.secs, 3600), 60),
+            day_seconds.secs % 60,
+        }) catch |err| std.debug.panic("failed to write to stderr: {}", .{err});
+    }
+    std.log.defaultLog(level, scope, format, args);
+}
+
 fn loggyWriteCmd(writer: anytype, comptime fmt: []const u8, args: anytype) !void {
     log_send.info("sending '" ++ fmt ++ "'", args);
     try writer.print(fmt ++ "\r\n", args);
@@ -52,7 +72,7 @@ pub fn usage() void {
     , .{});
 }
 
-pub fn main() u8 {
+pub fn main() !u8 {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena = &arena_store.allocator;
 
@@ -87,11 +107,18 @@ pub fn main() u8 {
         return 1;
     };
 
-    go(channel, out_dir) catch |e| {
-        std.log.err("{}", .{e});
-        return 1;
-    };
-    unreachable;
+    (std.fs.cwd().openDir(out_dir, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            // this directory name must be the same for the logger and publisher, so this helps catch
+            // problems where they may have mistyped the name
+            std.log.err("--dir option '{s}' does not exist, giving up in case it was a typo", .{out_dir});
+            return 1;
+        },
+        else => |e| return e,
+    }).close();
+
+    try go(channel, out_dir);
+    @panic("unreachable");
 }
 
 pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
@@ -118,11 +145,19 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
     const reader = stream.reader();
     const writer = stream.writer();
 
-    var state = ClientState.init(out_dir_path, next_msg_num, user, login, channel);
-
+    var state = ClientState.init(out_dir_path, next_msg_num, user, login, channel, try getTimestamp());
     var data_len: usize = 0;
 
     while (true) {
+        while (true) {
+            const timeout_seconds = state.getPingTimeout(try getTimestamp());
+            // note: this only works with ssl disabled at the moment
+            switch (try waitFdTimeoutMillis(stream.net_stream.handle, @intCast(i32, timeout_seconds * 1000))) {
+                .fd_ready => break,
+                .timeout => try state.hitPingTimeout(host, writer),
+            }
+        }
+
         const read_len = try reader.read(buf[data_len..]);
         if (read_len == 0) {
             if (data_len > 0) {
@@ -131,6 +166,9 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
             log_event.info("end of stream", .{});
             break;
         }
+        const read_time = try getTimestamp();
+        state.ping_state = .{ .normal = .{ .ping_time = read_time + max_silence_seconds } };
+
         const len = data_len + read_len;
 
         const check_start = if (data_len > 0) (data_len - 1) else 0;
@@ -149,7 +187,7 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
                 log_event.err("failed to parse the following message ({}):\n{s}\n", .{e, msg});
                 return error.InvalidMsg;
             };
-            try state.handleMsg(msg, parsed, writer);
+            try state.handleMsg(read_time, msg, parsed, writer);
             msg_start = newline_index + 2;
             if (msg_start == len) {
                 data_len = 0;
@@ -165,9 +203,26 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
     }
 }
 
+fn waitFdTimeoutMillis(fd: std.os.fd_t, millis_timeout: i32) !enum { fd_ready, timeout } {
+    var fds = [_]std.os.pollfd { .{
+        .fd = fd,
+        .events = std.os.POLL.IN,
+        .revents = 0,
+    } };
+    const result = try std.os.poll(&fds, millis_timeout);
+    return switch (result) {
+        0 => .timeout,
+        1 => .fd_ready,
+        else => unreachable,
+    };
+}
+
 const Login = struct {
     pass: []const u8,
 };
+
+const max_silence_seconds = 60;
+const pong_response_timeout = 20;
 
 const ClientState = struct {
     const Stage = enum {
@@ -181,8 +236,23 @@ const ClientState = struct {
     user_count: u16,
     login: ?Login,
     channel: []const u8,
+    ping_state: union(enum) {
+        normal: struct {
+            ping_time: u64,
+        },
+        sent: struct {
+            give_up_time: u64,
+        },
+    },
 
-    pub fn init(out_dir: []const u8, next_msg_num: u32, user: []const u8, login: ?Login, channel: []const u8) ClientState {
+    pub fn init(
+        out_dir: []const u8,
+        next_msg_num: u32,
+        user: []const u8,
+        login: ?Login,
+        channel: []const u8,
+        timestamp: u64,
+    ) ClientState {
         return .{
             .out_dir = out_dir,
             .next_msg_num = next_msg_num,
@@ -191,12 +261,40 @@ const ClientState = struct {
             .user_count = 0,
             .login = login,
             .channel = channel,
+            .ping_state = .{ .normal = .{ .ping_time = timestamp + max_silence_seconds } },
         };
     }
+
+    pub fn getPingTimeout(self: ClientState, now: u64) u31 {
+        const event_time = switch (self.ping_state) {
+            .normal => |state| state.ping_time,
+            .sent => |state| state.give_up_time,
+        };
+        if (now >= event_time) return 0;
+        return @intCast(u31, event_time - now);
+    }
+
+    pub fn hitPingTimeout(self: *ClientState, host: []const u8, writer: anytype) !void {
+        switch (self.ping_state) {
+            .normal => {
+                log_event.info("nothing received for {} seconds, sending ping", .{max_silence_seconds});
+                // TODO: not sure if the 'host' is the right thing to send here
+                try loggyWriteCmd(writer, "PING {s}", .{host});
+                self.ping_state = .{ .sent = .{
+                    .give_up_time = ((try getTimestamp()) + pong_response_timeout),
+                } };
+            },
+            .sent => {
+                log_event.err("server didn't respond to ping, we must be disconnected", .{});
+                return error.NoPingResponse;
+            },
+        }
+    }
+
     fn targetsMe(self: ClientState, target: []const u8) bool {
         return mem.eql(u8, target, "*") or mem.eql(u8, target, self.user) or mem.eql(u8, target, "$$*");
     }
-    fn handleMsg(self: *ClientState, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
+    fn handleMsg(self: *ClientState, read_time: u64, msg: []const u8, parsed: irc.Msg, writer: anytype) !void {
         log_msg.info("{s}", .{msg});
         const params = msg[parsed.params_off..];
         switch (parsed.cmd) {
@@ -232,6 +330,10 @@ const ClientState = struct {
                     } else {
                         //log_event.warn("ignoring msg", .{});
                     }
+                } else if (mem.eql(u8, "PONG", name)) {
+                    // this would have been in response to a ping, just getting data
+                    // will be enough to reset the ping timeout so we don't need any
+                    // special handling for this
                 } else if (mem.eql(u8, "PING", name)) {
                     try loggyWriteCmd(writer, "PONG {s}", .{params});
                 } else if (mem.eql(u8, "JOIN", name)) {
@@ -270,7 +372,7 @@ const ClientState = struct {
                             log_event.info("reset msg counter from {} back to 0", .{self.next_msg_num});
                             self.next_msg_num = 0;
                         }
-                        try writeMsg(self.out_dir, self.next_msg_num, try getTimestamp(), from, private_msg);
+                        try writeMsg(self.out_dir, self.next_msg_num, read_time, from, private_msg);
                         self.next_msg_num += 1;
                     } else {
                         log_event.warn("PRIVMSG to unknown target '{s}'", .{target});
