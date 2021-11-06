@@ -9,7 +9,7 @@ pub fn build(b: *std.build.Builder) !void {
 }
 
 fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
-    const exe = b.addExecutable("zig-irc-logger", "logger.zig");
+    const exe = b.addExecutable("irc-logger", "logger.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
@@ -37,7 +37,7 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run-logger", "Run the zig-irc-logger exe");
+    const run_step = b.step("run-logger", "Run the irc-logger exe");
     run_step.dependOn(&run_cmd.step);
 }
 

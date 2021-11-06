@@ -1,4 +1,4 @@
-//! Connects to the #zig irc channel and saves channel messages to a directory.
+//! Connects to the an irc channel and saves channel messages to a directory.
 //!
 //! Each message is written to its own file whose name taken from on an ongoing
 //! counter. If the directory is emptied, then the counter is reset back to 0.
@@ -17,11 +17,7 @@
 //!
 const std = @import("std");
 const mem = std.mem;
-const os = struct {
-    usingnamespace std.os;
-    // workaround https://github.com/ziglang/zig/issues/9856
-    pub const CLOCK_REALTIME = 0;
-};
+const os = std.os;
 
 const ssl = @import("ssl");
 
@@ -67,7 +63,7 @@ fn getArgOption(args: [][]const u8, i: *usize) []const u8 {
 
 pub fn usage() void {
     std.debug.print(
-        \\Usage: zig-irc-logger --channel NAME --dir DIR
+        \\Usage: irc-logger --server SERVER --user USER --channel NAME --dir DIR
         \\
     , .{});
 }
@@ -76,6 +72,8 @@ pub fn main() !u8 {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena = &arena_store.allocator;
 
+    var server_option: ?[]const u8 = null;
+    var user_option: ?[]const u8 = null;
     var channel_option: ?[]const u8 = null;
     var out_dir_option: ?[]const u8 = null;
     {
@@ -88,7 +86,11 @@ pub fn main() !u8 {
         var arg_index: usize = 0;
         while (arg_index < args.len) : (arg_index += 1) {
             const arg = args[arg_index];
-            if (std.mem.eql(u8, arg, "--channel")) {
+            if (std.mem.eql(u8, arg, "--server")) {
+                server_option = getArgOption(args, &arg_index);
+            } else if (std.mem.eql(u8, arg, "--user")) {
+                user_option = getArgOption(args, &arg_index);
+            } else if (std.mem.eql(u8, arg, "--channel")) {
                 channel_option = getArgOption(args, &arg_index);
             } else if (std.mem.eql(u8, arg, "--dir")) {
                 out_dir_option = getArgOption(args, &arg_index);
@@ -98,6 +100,14 @@ pub fn main() !u8 {
             }
         }
     }
+    const server = server_option orelse {
+        std.log.err("missing '--server SERVER' command-line option", .{});
+        return 1;
+    };
+    const user = user_option orelse {
+        std.log.err("missing '--user USER' command-line option", .{});
+        return 1;
+    };
     const channel = channel_option orelse {
         std.log.err("missing '--channel NAME' command-line option", .{});
         return 1;
@@ -107,23 +117,11 @@ pub fn main() !u8 {
         return 1;
     };
 
-    (std.fs.cwd().openDir(out_dir, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            // this directory name must be the same for the logger and publisher, so this helps catch
-            // problems where they may have mistyped the name
-            std.log.err("--dir option '{s}' does not exist, giving up in case it was a typo", .{out_dir});
-            return 1;
-        },
-        else => |e| return e,
-    }).close();
-
-    try go(channel, out_dir);
+    try go(server, user, channel, out_dir);
     @panic("unreachable");
 }
 
-pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
-    const host: []const u8 = "irc.libera.chat";
-    const user = "zig-irc-logger";
+pub fn go(server: []const u8, user: []const u8, channel: []const u8, out_dir_path: []const u8) !void {
     //const login = Login { .pass = "some-password" };
     const login = null;
 
@@ -139,7 +137,7 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
     var stream = blk: {
         var a = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer a.deinit();
-        break :blk try ssl.Stream.init(try std.net.tcpConnectToHost(&a.allocator, host, ssl.irc_port), host, &stream_pinned);
+        break :blk try ssl.Stream.init(try std.net.tcpConnectToHost(&a.allocator, server, ssl.irc_port), server, &stream_pinned);
     };
     defer stream.deinit();
     const reader = stream.reader();
@@ -154,7 +152,7 @@ pub fn go(channel: []const u8, out_dir_path: []const u8) !void {
             // note: this only works with ssl disabled at the moment
             switch (try waitFdTimeoutMillis(stream.net_stream.handle, @intCast(i32, timeout_seconds * 1000))) {
                 .fd_ready => break,
-                .timeout => try state.hitPingTimeout(host, writer),
+                .timeout => try state.hitPingTimeout(server, writer),
             }
         }
 
@@ -274,12 +272,12 @@ const ClientState = struct {
         return @intCast(u31, event_time - now);
     }
 
-    pub fn hitPingTimeout(self: *ClientState, host: []const u8, writer: anytype) !void {
+    pub fn hitPingTimeout(self: *ClientState, server: []const u8, writer: anytype) !void {
         switch (self.ping_state) {
             .normal => {
                 log_event.info("nothing received for {} seconds, sending ping", .{max_silence_seconds});
                 // TODO: not sure if the 'host' is the right thing to send here
-                try loggyWriteCmd(writer, "PING {s}", .{host});
+                try loggyWriteCmd(writer, "PING {s}", .{server});
                 self.ping_state = .{ .sent = .{
                     .give_up_time = ((try getTimestamp()) + pong_response_timeout),
                 } };
@@ -405,7 +403,7 @@ const ClientState = struct {
 
 fn getTimestamp() !u64 {
     var ts: os.timespec = undefined;
-    try os.clock_gettime(os.CLOCK_REALTIME, &ts);
+    try os.clock_gettime(os.CLOCK.REALTIME, &ts);
     return @intCast(u64, ts.tv_sec);
 }
 
@@ -446,7 +444,13 @@ fn dirIsEmpty(path: []const u8) !bool {
 fn cleanPartialFilesAndFindNextMsgNum(out_dir_path: []const u8) !u32 {
     var next_msg_num: u32 = 0;
     var clean_count: usize = 0;
-    var dir = try std.fs.cwd().openDir(out_dir_path, .{.iterate=true});
+    var dir = std.fs.cwd().openDir(out_dir_path, .{.iterate=true}) catch |err| switch(err) {
+        error.FileNotFound => {
+            std.log.err("--dir option '{s}' does not exist, giving up in case it was a typo", .{out_dir_path});
+            std.os.exit(0xff);
+        },
+        else => |e| return e,
+    };
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |entry| {
