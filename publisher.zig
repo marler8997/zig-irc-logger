@@ -1,5 +1,5 @@
-//! Watches the output directory of zig-irc-logger for new files being "moved"
-//! into it, which is the last step zig-irc-logger will do when saving a new
+//! Watches the output directory of irc-logger for new files being "moved"
+//! into it, which is the last step irc-logger will do when saving a new
 //! IRC message.
 //!
 //! Both at startup and when a new message is detected, publisher will take all
@@ -7,20 +7,14 @@
 //!
 //! Note that if this program stops or fails then it's not a big deal.  It will just
 //! stop live updates from being published until it starts again, but IRC messages
-//! will still be saved to disk by zig-irc-logger.  This program is designed to be
+//! will still be saved to disk by irc-logger.  This program is designed to be
 //! restarted and continue where it left off.
 //!
 const std = @import("std");
 const os = std.os;
-const linux = struct {
-    usingnamespace os.linux;
-
-    // constant is now missing from the std lib (see https://github.com/ziglang/zig/issues/9855)
-    pub const IN_MOVED_TO = 0x00000080;
-};
+const linux = os.linux;
 const inotify_event = linux.inotify_event;
-
-const epoch = @import("epoch.zig");
+const epoch = std.time.epoch;
 
 var global_event_buf: [4096]u8 align(@alignOf(inotify_event)) = undefined;
 
@@ -108,7 +102,7 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
     }
 
     const inotify_fd = try os.inotify_init1(0); // linux.IN_CLOEXEC??
-    const watch_fd = os.inotify_add_watch(inotify_fd, logger_dir, linux.IN_MOVED_TO) catch |e| switch(e) {
+    const watch_fd = os.inotify_add_watch(inotify_fd, logger_dir, linux.IN.MOVED_TO) catch |e| switch(e) {
         error.FileNotFound => {
             std.log.err("log directory '{s}' does not exist", .{logger_dir});
             return 1;
@@ -141,12 +135,10 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
                 std.log.err("expected event on fd {} but got {}", .{watch_fd, event.wd});
                 return error.WrongWatchFd;
             }
-            if (event.mask != linux.IN_MOVED_TO) {
-                std.log.err("expected event IN_MOVED_TO (0x{x}) but got 0x{x}", .{linux.IN_MOVED_TO, event.mask});
+            if (event.mask != linux.IN.MOVED_TO) {
+                std.log.err("expected event IN.MOVED_TO (0x{x}) but got 0x{x}", .{linux.IN.MOVED_TO, event.mask});
                 return error.WrongEventMask;
             }
-            //const name = @intToPtr([*:0]u8, @ptrToInt(event) + @sizeOf(inotify_event));
-            //handleNewFile(log_repo, name);
             if (.none == try publishFiles(logger_dir, log_repo_path, log_repo_dir)) {
                 std.log.warn("publishFiles did not publish anything?", .{});
             } else {
@@ -158,24 +150,6 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
         }
     }
 }
-
-//fn handleNewFile(log_repo: []const u8, name_ptr: [*:0]u8) void {
-//    const name = std.mem.spanZ(name_ptr);
-//    if (std.mem.endsWith(u8, name, ".partial")) {
-//        std.log.err("got an event for a .partial file? '{s}'", .{name});
-//        // should we remove it?
-//        return;
-//    }
-//    // make sure it is a valid timestamp
-//    const timestamp = std.fmt.parseInt(i64, name, 10) catch |e| {
-//        std.log.err("filename '{s}' is not a valid i64 timestamp", .{name});
-//        // should we remove it? what should we do here?
-//        return;
-//    };
-//    // TODO: add this new message to the git repo
-//    // TODO: turn timestamp into year/month-dat.txt
-//    std.log.info("TODO: handle new message '{}'", .{timestamp});
-//}
 
 const RepoState = struct {
     have_log: bool,
