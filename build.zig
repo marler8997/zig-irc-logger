@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.build.Builder) !void {
     const target = b.standardTargetOptions(.{});
+    // TODO: replace with 'b.standardOptimizeOption(.{})' on Zig 0.11+
     const mode = b.standardReleaseOptions();
     try addLogger(b, target, mode);
     try addPublisher(b, target, mode);
@@ -15,6 +16,7 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     exe.install();
 
     if (unwrapOptionalBool(b.option(bool, "ssl", "enable ssl"))) {
+        // TODO: replace with std.crypto.tls after Zig 0.11
         const iguana_index_file = try (GitRepo {
             .url = "https://github.com/alexnask/iguanaTLS",
             .branch = null,
@@ -22,9 +24,9 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
         }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "main.zig");
         exe.addPackage(.{
             .name = "ssl",
-            .path = .{ .path = "iguanassl.zig" },
+            .source = .{ .path = "iguanassl.zig" },
             .dependencies = &[_]std.build.Pkg {
-                .{ .name = "iguana", .path = .{ .path = iguana_index_file } },
+                .{ .name = "iguana", .source = .{ .path = iguana_index_file } },
             },
         });
     } else {
@@ -90,13 +92,13 @@ pub const GitRepo = struct {
     sha: []const u8,
     path: ?[]const u8 = null,
 
-    pub fn defaultReposDir(allocator: *std.mem.Allocator) ![]const u8 {
+    pub fn defaultReposDir(allocator: std.mem.Allocator) ![]const u8 {
         const cwd = try std.process.getCwdAlloc(allocator);
         defer allocator.free(cwd);
         return try std.fs.path.join(allocator, &[_][]const u8 { cwd, "dep" });
     }
 
-    pub fn resolve(self: GitRepo, allocator: *std.mem.Allocator) ![]const u8 {
+    pub fn resolve(self: GitRepo, allocator: std.mem.Allocator) ![]const u8 {
         var optional_repos_dir_to_clean: ?[]const u8 = null;
         defer {
             if (optional_repos_dir_to_clean) |p| {
@@ -111,7 +113,7 @@ pub const GitRepo = struct {
         };
         errdefer allocator.free(path);
 
-        std.fs.accessAbsolute(path, std.fs.File.OpenFlags { .read = true }) catch {
+        std.fs.accessAbsolute(path, std.fs.File.OpenFlags { .mode = .read_only }) catch {
             std.debug.print("Error: repository '{s}' does not exist\n", .{path});
             std.debug.print("       Run the following to clone it:\n", .{});
             const branch_args = if (self.branch) |b| &[2][]const u8 {" -b ", b} else &[2][]const u8 {"", ""};
@@ -125,7 +127,7 @@ pub const GitRepo = struct {
         return path;
     }
 
-    pub fn resolveOneFile(self: GitRepo, allocator: *std.mem.Allocator, index_sub_path: []const u8) ![]const u8 {
+    pub fn resolveOneFile(self: GitRepo, allocator: std.mem.Allocator, index_sub_path: []const u8) ![]const u8 {
         const repo_path = try self.resolve(allocator);
         defer allocator.free(repo_path);
         return try std.fs.path.join(allocator, &[_][]const u8 { repo_path, index_sub_path });

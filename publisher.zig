@@ -36,7 +36,7 @@ pub fn usage() void {
 
 pub fn main() !u8 {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const arena = &arena_store.allocator;
+    const arena = arena_store.allocator();
 
     var logger_dir_option: ?[]const u8 = null;
     var repo_option: ?[]const u8 = null;
@@ -159,7 +159,7 @@ const RepoState = struct {
 fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !RepoState {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
-    const arena = &arena_store.allocator;
+    const arena = arena_store.allocator();
 
     const result = try runCaptureOuts(arena, repo, &[_][]const u8 {"git", "status", "--porcelain"});
     try passOrDumpAndThrow(result);
@@ -197,14 +197,14 @@ fn checkRepo(repo: []const u8, log_file_to_commit: []const u8) !RepoState {
 
 fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir: std.fs.Dir) !enum { none, published } {
     // TODO: maybe handle some of the openDir errors?
-    var dir = try std.fs.cwd().openDir(logger_dir, .{.iterate=true});
-    defer dir.close();
+    var it_dir = try std.fs.cwd().openIterableDir(logger_dir, .{});
+    defer it_dir.close();
 
     const MinMax = struct {min: u32, max: u32};
 
     const min_max = blk: {
         var result: ?MinMax = null;
-        var it = dir.iterate();
+        var it = it_dir.iterate();
         // TODO: maybe handle some of the errors with it.next()?
         while (try it.next()) |entry| {
             if (std.mem.endsWith(u8, entry.name, ".partial")) {
@@ -240,7 +240,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
             var name_buf: [40]u8 = undefined;
             const name = std.fmt.bufPrint(&name_buf, "{}", .{i}) catch unreachable;
             {
-                const file = dir.openFile(name, .{}) catch |e| switch (e) {
+                const file = it_dir.dir.openFile(name, .{}) catch |e| switch (e) {
                     error.FileNotFound => {
                         if (i == min_max.min or i == min_max.max) {
                             return e;
@@ -254,7 +254,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
                 try publishFile(name, file, log_repo_path, log_repo_dir);
             }
             std.log.info("rm '{s}'", .{name});
-            try dir.deleteFile(name);
+            try it_dir.dir.deleteFile(name);
 
             if (i == min_max.max)
                 break;
@@ -266,7 +266,7 @@ fn publishFiles(logger_dir: []const u8, log_repo_path: []const u8, log_repo_dir:
 fn runNoCapture(cwd: []const u8, argv: []const []const u8) !void {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
-    const result = try runCaptureOuts(&arena_store.allocator, cwd, argv);
+    const result = try runCaptureOuts(arena_store.allocator(), cwd, argv);
     if (result.stdout.len > 0) {
         std.log.info("STDOUT: '{s}'", .{result.stdout});
     }
@@ -303,7 +303,7 @@ fn passOrDumpAndThrow(result: std.ChildProcess.ExecResult) error{ChildProcessFai
     }
 }
 
-fn runCaptureOuts(allocator: *std.mem.Allocator, cwd: []const u8, argv: []const []const u8) !std.ChildProcess.ExecResult {
+fn runCaptureOuts(allocator: std.mem.Allocator, cwd: []const u8, argv: []const []const u8) !std.ChildProcess.ExecResult {
     {
         const cmd = try std.mem.join(allocator, " ", argv);
         defer allocator.free(cmd);
@@ -462,7 +462,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u
     }
 }
 
-fn getSha(allocator: *std.mem.Allocator, repo_path: []const u8, refspec: []const u8) ![]const u8 {
+fn getSha(allocator: std.mem.Allocator, repo_path: []const u8, refspec: []const u8) ![]const u8 {
     const result = try runCaptureOuts(allocator, repo_path, &[_][]const u8 {"git", "rev-parse", refspec});
     try passOrDumpAndThrow(result);
     std.debug.assert(result.stderr.len == 0);
@@ -476,7 +476,7 @@ fn newLog(log_repo_path: []const u8, log_repo_dir: std.fs.Dir, now_link: []const
 
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_store.deinit();
-    const arena = &arena_store.allocator;
+    const arena = arena_store.allocator();
 
     const head = try getSha(arena, log_repo_path, "HEAD");
     std.log.info("HEAD is at '{s}'", .{head});

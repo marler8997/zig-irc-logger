@@ -70,7 +70,7 @@ pub fn usage() void {
 
 pub fn main() !u8 {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const arena = &arena_store.allocator;
+    const arena = arena_store.allocator();
 
     var server_option: ?[]const u8 = null;
     var user_option: ?[]const u8 = null;
@@ -137,7 +137,7 @@ pub fn go(server: []const u8, user: []const u8, channel: []const u8, out_dir_pat
     var stream = blk: {
         var a = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer a.deinit();
-        break :blk try ssl.Stream.init(try std.net.tcpConnectToHost(&a.allocator, server, ssl.irc_port), server, &stream_pinned);
+        break :blk try ssl.Stream.init(try std.net.tcpConnectToHost(a.allocator(), server, ssl.irc_port), server, &stream_pinned);
     };
     defer stream.deinit();
     const reader = stream.reader();
@@ -435,7 +435,7 @@ fn writeMsg(out_dir_path: []const u8, msg_num: u32, timestamp: u64, from: []cons
 }
 
 fn dirIsEmpty(path: []const u8) !bool {
-    var dir = try std.fs.cwd().openDir(path, .{.iterate=true});
+    var dir = try std.fs.cwd().openIterableDir(path, .{.access_sub_paths=true});
     defer dir.close();
     var it = dir.iterate();
     return if (try it.next()) |_| false else true;
@@ -444,19 +444,19 @@ fn dirIsEmpty(path: []const u8) !bool {
 fn cleanPartialFilesAndFindNextMsgNum(out_dir_path: []const u8) !u32 {
     var next_msg_num: u32 = 0;
     var clean_count: usize = 0;
-    var dir = std.fs.cwd().openDir(out_dir_path, .{.iterate=true}) catch |err| switch(err) {
+    var it_dir = std.fs.cwd().openIterableDir(out_dir_path, .{.access_sub_paths=true}) catch |err| switch(err) {
         error.FileNotFound => {
             std.log.err("--dir option '{s}' does not exist, giving up in case it was a typo", .{out_dir_path});
             std.os.exit(0xff);
         },
         else => |e| return e,
     };
-    defer dir.close();
-    var it = dir.iterate();
+    defer it_dir.close();
+    var it = it_dir.iterate();
     while (try it.next()) |entry| {
         if (std.mem.endsWith(u8, entry.name, ".partial")) {
             std.log.info("removing '{s}/{s}'", .{out_dir_path, entry.name});
-            try dir.deleteFile(entry.name);
+            try it_dir.dir.deleteFile(entry.name);
             clean_count += 1;
         } else {
             const num = std.fmt.parseInt(u32, entry.name, 10) catch {
