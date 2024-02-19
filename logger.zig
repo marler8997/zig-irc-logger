@@ -72,10 +72,12 @@ pub fn main() !u8 {
     var arena_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena = arena_store.allocator();
 
-    var server_option: ?[]const u8 = null;
-    var user_option: ?[]const u8 = null;
-    var channel_option: ?[]const u8 = null;
-    var out_dir_option: ?[]const u8 = null;
+    var opt: struct {
+        server: ?[]const u8 = null,
+        user: ?[]const u8 = null,
+        channel: ?[]const u8 = null,
+        out_dir: ?[]const u8 = null,
+    } = .{};
     {
         const args = (std.process.argsAlloc(arena) catch @panic("out of memory"))[1..];
         if (args.len == 0) {
@@ -87,32 +89,32 @@ pub fn main() !u8 {
         while (arg_index < args.len) : (arg_index += 1) {
             const arg = args[arg_index];
             if (std.mem.eql(u8, arg, "--server")) {
-                server_option = getArgOption(args, &arg_index);
+                opt.server = getArgOption(args, &arg_index);
             } else if (std.mem.eql(u8, arg, "--user")) {
-                user_option = getArgOption(args, &arg_index);
+                opt.user = getArgOption(args, &arg_index);
             } else if (std.mem.eql(u8, arg, "--channel")) {
-                channel_option = getArgOption(args, &arg_index);
+                opt.channel = getArgOption(args, &arg_index);
             } else if (std.mem.eql(u8, arg, "--dir")) {
-                out_dir_option = getArgOption(args, &arg_index);
+                opt.out_dir = getArgOption(args, &arg_index);
             } else {
                 std.log.err("unknown command-line arg '{s}'", .{arg});
                 return 1;
             }
         }
     }
-    const server = server_option orelse {
+    const server = opt.server orelse {
         std.log.err("missing '--server SERVER' command-line option", .{});
         return 1;
     };
-    const user = user_option orelse {
+    const user = opt.user orelse {
         std.log.err("missing '--user USER' command-line option", .{});
         return 1;
     };
-    const channel = channel_option orelse {
+    const channel = opt.channel orelse {
         std.log.err("missing '--channel NAME' command-line option", .{});
         return 1;
     };
-    const out_dir = out_dir_option orelse {
+    const out_dir = opt.out_dir orelse {
         std.log.err("missing '--dir DIR' command-line option", .{});
         return 1;
     };
