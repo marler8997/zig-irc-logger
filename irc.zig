@@ -28,14 +28,14 @@ pub fn parseMsg(msg: []const u8) !Msg {
     std.debug.assert(msg.len < std.math.maxInt(u16));
     var result : Msg = undefined;
 
-    const cmd_start = blk: {
+    const cmd_start: u16 = blk: {
         if (msg[0] == ':') {
-            result.prefix_limit = @intCast(u16, std.mem.indexOfScalarPos(u8, msg, 1, ' ') orelse
+            result.prefix_limit = @intCast(std.mem.indexOfScalarPos(u8, msg, 1, ' ') orelse
                 return error.MissingSpaceAfterMsgPrefix);
             var cmd_start: u16 = result.prefix_limit + 1;
             while (cmd_start < msg.len and msg[cmd_start] == ' ')
                 cmd_start += 1;
-            break :blk @intCast(u16, cmd_start);
+            break :blk cmd_start;
         }
         result.prefix_limit = 0;
         break :blk 0;
@@ -158,7 +158,7 @@ pub const ParamIterator = struct {
                     break;
             }
         }
-        return start[0 .. @ptrToInt(self.ptr) - @ptrToInt(start)];
+        return start[0 .. @intFromPtr(self.ptr) - @intFromPtr(start)];
     }
 };
 

@@ -124,7 +124,7 @@ pub fn go(logger_dir: []const u8, log_repo_path: []const u8) !u8 {
                     @sizeOf(inotify_event), available});
                 return error.INotifyReadWrongLen;
             }
-            const event = @ptrCast(*inotify_event, @alignCast(@alignOf(inotify_event), &global_event_buf[offset]));
+            const event: *inotify_event = @alignCast(@ptrCast(&global_event_buf[offset]));
             const event_size = @sizeOf(inotify_event) + event.len;
             if (available < event_size) {
                 std.log.err("read data cutoff before end of inotify_event data (needed {}, got {})", .{
@@ -372,7 +372,7 @@ fn decodeFilenameDate(filename: []const u8) error{InvalidRepoDateFilename}!RepoD
             std.log.err("filename '{s}' contains invalid year: {}", .{filename, e});
             return error.InvalidRepoDateFilename;
         },
-        .month = @intToEnum(epoch.Month, month_num),
+        .month = @enumFromInt(month_num),
         .day_index = day_num - 1,
     };
 }
@@ -429,7 +429,7 @@ fn publishFile(filename: []const u8, file: std.fs.File, log_repo_path: []const u
             if (year_day.year != now.year)
                 break :blk year_day.year > now.year;
             if (month_day.month != now.month)
-                break :blk @enumToInt(month_day.month) > @enumToInt(now.month);
+                break :blk @intFromEnum(month_day.month) > @intFromEnum(now.month);
             std.debug.assert(month_day.day_index != now.day_index);
             break :blk month_day.day_index > now.day_index;
         };

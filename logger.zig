@@ -150,7 +150,7 @@ pub fn go(server: []const u8, user: []const u8, channel: []const u8, out_dir_pat
         while (true) {
             const timeout_seconds = state.getPingTimeout(try getTimestamp());
             // note: this only works with ssl disabled at the moment
-            switch (try waitFdTimeoutMillis(stream.net_stream.handle, @intCast(i32, timeout_seconds * 1000))) {
+            switch (try waitFdTimeoutMillis(stream.net_stream.handle, @intCast(timeout_seconds * 1000))) {
                 .fd_ready => break,
                 .timeout => try state.hitPingTimeout(server, writer),
             }
@@ -269,7 +269,7 @@ const ClientState = struct {
             .sent => |state| state.give_up_time,
         };
         if (now >= event_time) return 0;
-        return @intCast(u31, event_time - now);
+        return @intCast(event_time - now);
     }
 
     pub fn hitPingTimeout(self: *ClientState, server: []const u8, writer: anytype) !void {
@@ -404,7 +404,7 @@ const ClientState = struct {
 fn getTimestamp() !u64 {
     var ts: os.timespec = undefined;
     try os.clock_gettime(os.CLOCK.REALTIME, &ts);
-    return @intCast(u64, ts.tv_sec);
+    return @intCast(ts.tv_sec);
 }
 
 fn makeNamePath(buf: []u8, out_dir_path: []const u8, msg_num: u32) usize {

@@ -1,19 +1,22 @@
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) !void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     // TODO: replace with 'b.standardOptimizeOption(.{})' on Zig 0.11+
-    const mode = b.standardReleaseOptions();
-    try addLogger(b, target, mode);
-    try addPublisher(b, target, mode);
-    //try addWebServer(b, target, mode);
+    const optimize = b.standardOptimizeOption(.{});
+    try addLogger(b, target, optimize);
+    try addPublisher(b, target, optimize);
+    //try addWebServer(b, target, optimize);
 }
 
-fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
-    const exe = b.addExecutable("irc-logger", "logger.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.install();
+fn addLogger(b: *std.Build, target: anytype, optimize: anytype) !void {
+    const exe = b.addExecutable(.{
+        .name = "irc-logger",
+        .root_source_file = .{ .path = "logger.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(exe);
 
     if (unwrapOptionalBool(b.option(bool, "ssl", "enable ssl"))) {
         // TODO: replace with std.crypto.tls after Zig 0.11
@@ -22,18 +25,22 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
             .branch = null,
             .sha = "aefd468513d578576e2b1b23f3b8e2eabcfda560",
         }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "main.zig");
-        exe.addPackage(.{
-            .name = "ssl",
-            .source = .{ .path = "iguanassl.zig" },
-            .dependencies = &[_]std.build.Pkg {
-                .{ .name = "iguana", .source = .{ .path = iguana_index_file } },
-            },
-        });
+        _ = iguana_index_file;
+        @panic("todo");
+//        exe.addModule(.{
+//            .name = "ssl",
+//            .source = .{ .path = "iguanassl.zig" },
+//            .dependencies = &[_]std.build.Pkg {
+//                .{ .name = "iguana", .source = .{ .path = iguana_index_file } },
+//            },
+//        });
     } else {
-        exe.addPackagePath("ssl", "nossl.zig");
+        exe.addModule("ssl", b.createModule(.{
+            .source_file = .{ .path = "nossl.zig" },
+        }));
     }
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -43,13 +50,16 @@ fn addLogger(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     run_step.dependOn(&run_cmd.step);
 }
 
-fn addPublisher(b: *std.build.Builder, target: anytype, mode: anytype) !void {
-    const exe = b.addExecutable("zig-irc-publisher", "publisher.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.install();
+fn addPublisher(b: *std.Build, target: anytype, optimize: anytype) !void {
+    const exe = b.addExecutable(.{
+        .name = "zig-irc-publisher",
+        .root_source_file = .{ .path = "publisher.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(exe);
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -59,7 +69,7 @@ fn addPublisher(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     run_step.dependOn(&run_cmd.step);
 }
 
-fn addWebServer(b: *std.build.Builder, target: anytype, mode: anytype) !void {
+fn addWebServer(b: *std.Build, target: anytype, optimize: anytype) !void {
     const apple_pie_index = try (GitRepo {
         .url = "https://github.com/luukdegram/apple_pie",
         .branch = null,
@@ -67,7 +77,7 @@ fn addWebServer(b: *std.build.Builder, target: anytype, mode: anytype) !void {
     }).resolveOneFile(b.allocator, "src" ++ std.fs.path.sep_str ++ "apple_pie.zig");
     const exe = b.addExecutable("serve", "serve.zig");
     exe.setTarget(target);
-    exe.setBuildMode(mode);
+    exe.setBuildMode(optimize);
     exe.addPackagePath("apple_pie", apple_pie_index);
     exe.install();
 
